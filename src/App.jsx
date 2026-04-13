@@ -106,6 +106,9 @@ export default function App() {
       const venc = parseDate(row[col['Vencimiento']]);
       const fichaName = row[col['Ficha']]?.toString() || '';
       const esCopec = fichaName.toUpperCase().includes('COPEC');
+      // Combustible = solo COPEC puro, no lubricantes
+      const isCombustible = razon === 'COPEC S A' || razon === 'COPEC S A (NOTA DE CREDITO)' ||
+                            razon === 'ESMAX DISTRIBUCION SPA' || razon === 'ESMAX DISTRIBUCION SPA (NOTA DE CREDITO)';
       const saldo = parseFloat(row[col['Saldo ($)']]) || 0;
       const numDoc = normDoc(row[col['Número Doc.']]);
       const rut = row[col['ID Ficha']]?.toString() || '';
@@ -141,7 +144,7 @@ export default function App() {
         fecha: fmtDateISO(pago),
         nDoc: numDoc, rut, detalle: razon, monto: saldo,
         cuotas: cuotaText, autorizador: defaultAuth,
-        isNC, esCopec,
+        isNC, esCopec, isCombustible,
       });
     });
 
@@ -162,68 +165,74 @@ export default function App() {
 
   // ─── STATS ─────────────────────────────────────────────────────────
   const stats = useMemo(() => {
-    const copecRows = nominaRows.filter(r => r.esCopec);
-    const otrosRows = nominaRows.filter(r => !r.esCopec);
-    const copecTotal = copecRows.reduce((s, r) => s + r.monto, 0);
-    const otrosTotal = otrosRows.reduce((s, r) => s + r.monto, 0);
-    const total = copecTotal + otrosTotal;
+    // Current week breakdown: Combustible vs Proveedores
+    const combustibleRows = nominaRows.filter(r => r.isCombustible);
+    const proveedorRows = nominaRows.filter(r => !r.isCombustible);
+    const combustibleTotal = combustibleRows.reduce((s, r) => s + r.monto, 0);
+    const proveedorTotal = proveedorRows.reduce((s, r) => s + r.monto, 0);
+    const total = combustibleTotal + proveedorTotal;
+
     const byAuth = {};
     nominaRows.forEach(r => { byAuth[r.autorizador] = (byAuth[r.autorizador] || 0) + r.monto; });
     const topProvs = {};
-    otrosRows.forEach(r => { topProvs[r.detalle] = (topProvs[r.detalle] || 0) + r.monto; });
+    proveedorRows.forEach(r => { topProvs[r.detalle] = (topProvs[r.detalle] || 0) + r.monto; });
     const top5 = Object.entries(topProvs).sort((a, b) => b[1] - a[1]).slice(0, 5);
 
-    // Historical comparison from Google Sheets
-    const COPEC_SET = new Set(["COPEC S A","COPEC S A (LUBRICANTES)","COPEC S A (LUBRICANTES)(NOTA DE CREDITO)",
-      "ESMAX DISTRIBUCION SPA","FLUX SOLAR ENERGIAS RENOVABLES SPA"]);
+    // Historical comparison - COMBUSTIBLE = only pure COPEC + ESMAX (not lubricantes)
+    const COMBUSTIBLE_HIST = new Set(["COPEC S A","COPEC S A (NOTA DE CREDITO)",
+      "ESMAX DISTRIBUCION SPA","ESMAX DISTRIBUCION SPA (NOTA DE CREDITO)"]);
+    const pagoISO = fechas.viernes; // current payment date
+
     const weekTotals = {};
     historico.forEach(h => {
       const f = h.FECHA_PAGO;
-      if(!f) return;
-      if(!weekTotals[f]) weekTotals[f] = { total:0, copec:0, otros:0, docs:0 };
+      if(!f || f >= pagoISO) return; // Exclude current week and future
+      if(!weekTotals[f]) weekTotals[f] = { total:0, combustible:0, proveedores:0, docs:0 };
       const m = parseFloat(h.MONTO) || 0;
       weekTotals[f].total += m;
       weekTotals[f].docs += 1;
-      if(COPEC_SET.has(h.DETALLE)) weekTotals[f].copec += m;
-      else weekTotals[f].otros += m;
+      if(COMBUSTIBLE_HIST.has(h.DETALLE)) weekTotals[f].combustible += m;
+      else weekTotals[f].proveedores += m;
     });
     const sortedWeeks = Object.entries(weekTotals).sort((a,b) => a[0].localeCompare(b[0]));
 
-    // Previous week
+    // Previous week = last week in historico BEFORE current
     const prevWeek = sortedWeeks.length > 0 ? sortedWeeks[sortedWeeks.length - 1] : null;
-    const varTotal = prevWeek ? ((total / prevWeek[1].total) - 1) * 100 : null;
-    const varOtros = prevWeek && prevWeek[1].otros ? ((otrosTotal / prevWeek[1].otros) - 1) * 100 : null;
-    const varCopec = prevWeek && prevWeek[1].copec ? ((copecTotal / prevWeek[1].copec) - 1) * 100 : null;
+    const varTotal = prevWeek && prevWeek[1].total ? ((total / prevWeek[1].total) - 1) * 100 : null;
+    const varProveedores = prevWeek && prevWeek[1].proveedores ? ((proveedorTotal / prevWeek[1].proveedores) - 1) * 100 : null;
+    const varCombustible = prevWeek && prevWeek[1].combustible ? ((combustibleTotal / prevWeek[1].combustible) - 1) * 100 : null;
 
-    // 4-week moving average
+    // 4-week moving average (only from weeks before current)
     const last4 = sortedWeeks.slice(-4);
-    const avg4Total = last4.length > 0 ? last4.reduce((s,w) => s + w[1].total, 0) / last4.length : 0;
-    const avg4Otros = last4.length > 0 ? last4.reduce((s,w) => s + w[1].otros, 0) / last4.length : 0;
-    const varVsAvg = avg4Total ? ((total / avg4Total) - 1) * 100 : null;
+    const avg4Total = last4.length >= 2 ? last4.reduce((s,w) => s + w[1].total, 0) / last4.length : 0;
+    const varVsAvg = avg4Total > 1000 ? ((total / avg4Total) - 1) * 100 : null; // sanity check
 
     // Alerts
     const alerts = [];
-    if(varTotal !== null && varTotal > 15) alerts.push({ type:'warn', text:`Nómina +${varTotal.toFixed(0)}% vs semana anterior` });
-    if(varTotal !== null && varTotal < -15) alerts.push({ type:'good', text:`Nómina ${varTotal.toFixed(0)}% vs semana anterior` });
-    if(varOtros !== null && varOtros > 30) alerts.push({ type:'warn', text:`Proveedores +${varOtros.toFixed(0)}% vs semana anterior` });
-    if(varVsAvg !== null && varVsAvg > 15) alerts.push({ type:'warn', text:`+${varVsAvg.toFixed(0)}% sobre promedio mensual` });
+    if(varTotal !== null && Math.abs(varTotal) < 1000) { // sanity: ignore absurd %
+      if(varTotal > 15) alerts.push({ type:'warn', text:`Nómina +${varTotal.toFixed(0)}% vs semana anterior` });
+      if(varTotal < -15) alerts.push({ type:'good', text:`Nómina ${varTotal.toFixed(0)}% vs semana anterior` });
+    }
+    if(varProveedores !== null && Math.abs(varProveedores) < 1000) {
+      if(varProveedores > 30) alerts.push({ type:'warn', text:`Proveedores +${varProveedores.toFixed(0)}% vs semana anterior` });
+    }
+    if(varVsAvg !== null && Math.abs(varVsAvg) < 1000) {
+      if(varVsAvg > 15) alerts.push({ type:'warn', text:`+${varVsAvg.toFixed(0)}% sobre promedio mensual` });
+    }
 
-    // New providers (in current but not in last 8 weeks)
-    const recent8 = new Set();
-    sortedWeeks.slice(-8).forEach(([,w]) => {});
+    // New providers
     const recentProvs = new Set();
+    const recent8dates = new Set(sortedWeeks.slice(-8).map(w => w[0]));
     historico.forEach(h => {
-      const sw = sortedWeeks.slice(-8).map(w => w[0]);
-      if(sw.includes(h.FECHA_PAGO) && !COPEC_SET.has(h.DETALLE)) recentProvs.add(h.DETALLE);
+      if(recent8dates.has(h.FECHA_PAGO) && !COMBUSTIBLE_HIST.has(h.DETALLE)) recentProvs.add(h.DETALLE);
     });
-    const newProvs = otrosRows.filter(r => !recentProvs.has(r.detalle)).map(r => r.detalle);
-    const uniqueNew = [...new Set(newProvs)];
-    if(uniqueNew.length > 0) alerts.push({ type:'info', text:`${uniqueNew.length} proveedor(es) nuevo(s): ${uniqueNew.slice(0,3).join(', ')}${uniqueNew.length>3?'…':''}` });
+    const newProvs = [...new Set(proveedorRows.filter(r => !recentProvs.has(r.detalle)).map(r => r.detalle))];
+    if(newProvs.length > 0) alerts.push({ type:'info', text:`${newProvs.length} proveedor(es) nuevo(s): ${newProvs.slice(0,3).join(', ')}${newProvs.length>3?'…':''}` });
 
-    return { copecRows, otrosRows, copecTotal, otrosTotal, total, byAuth, top5,
-             totalDocs: nominaRows.length, prevWeek, varTotal, varOtros, varCopec,
-             avg4Total, avg4Otros, varVsAvg, alerts, sortedWeeks };
-  }, [nominaRows, historico]);
+    return { combustibleRows, proveedorRows, combustibleTotal, proveedorTotal, total, byAuth, top5,
+             totalDocs: nominaRows.length, prevWeek, varTotal, varProveedores, varCombustible,
+             avg4Total, varVsAvg, alerts, sortedWeeks };
+  }, [nominaRows, historico, fechas.viernes]);
 
   // ─── SEARCH ────────────────────────────────────────────────────────
   const doSearch = useCallback(() => {
@@ -378,8 +387,8 @@ export default function App() {
             ) : (<>
               <div style={S.grid(4, 10)}>
                 <Stat label="Total facturas" value={stats.totalDocs}/>
-                <Stat label="Otros proveedores" value={fmtCLP(stats.otrosTotal)} sub={`${stats.otrosRows.length} docs`}/>
-                <Stat label="COPEC" value={fmtCLP(stats.copecTotal)} sub={`${stats.copecRows.length} docs`}/>
+                <Stat label="Otros proveedores" value={fmtCLP(stats.proveedorTotal)} sub={`${stats.proveedorRows.length} docs`}/>
+                <Stat label="COPEC" value={fmtCLP(stats.combustibleTotal)} sub={`${stats.combustibleRows.length} docs`}/>
                 <Stat label="TOTAL GENERAL" value={fmtCLP(stats.total)} highlight/>
               </div>
 
@@ -417,11 +426,12 @@ export default function App() {
                           </td>
                           <td style={{ padding:'6px 10px', ...S.mono, fontSize:11, color:'#888' }}>{r.rut}</td>
                           <td style={{ padding:'6px 10px' }}>
-                            {r.isNC ? (
-                              <input value={r.detalle} onChange={e => updateRow(r.id, 'detalle', e.target.value)}
-                                style={{ width:'100%', border:'1px solid #FCD34D', borderRadius:4, padding:'3px 6px',
-                                  fontSize:11, background:'#FFFBEB', outline:'none' }}/>
-                            ) : <span style={{ fontSize:11 }}>{r.detalle}</span>}
+                            <input value={r.detalle} onChange={e => updateRow(r.id, 'detalle', e.target.value)}
+                              style={{ width:'100%', border: r.isNC ? '1px solid #FCD34D' : '1px solid transparent', borderRadius:4, padding:'3px 6px',
+                                fontSize:11, background: r.isNC ? '#FFFBEB' : 'transparent', outline:'none',
+                                transition:'all .15s' }}
+                              onFocus={e => { e.target.style.border='1px solid #1D9E75'; e.target.style.background='#fff'; }}
+                              onBlur={e => { e.target.style.border = r.isNC ? '1px solid #FCD34D' : '1px solid transparent'; e.target.style.background = r.isNC ? '#FFFBEB' : 'transparent'; }}/>
                           </td>
                           <td style={{ padding:'6px 10px', textAlign:'right', fontWeight:600, ...S.mono, fontSize:11,
                             color: r.monto < 0 ? '#DC2626' : '#1a1a1a' }}>{fmtCLP(r.monto)}</td>
@@ -494,28 +504,28 @@ export default function App() {
                   </div>
                   <div style={{ background:'#F5F5F0', borderRadius:12, padding:16, border:'1px solid #E0E0D8' }}>
                     <p style={{ fontSize:11, color:'#666', fontWeight:600 }}>Proveedores</p>
-                    <p style={{ fontSize:20, fontWeight:700, color:'#333', marginTop:4, ...S.mono }}>{fmtCLP(stats.otrosTotal)}</p>
+                    <p style={{ fontSize:20, fontWeight:700, color:'#333', marginTop:4, ...S.mono }}>{fmtCLP(stats.proveedorTotal)}</p>
                     <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6 }}>
-                      <span style={{ fontSize:11, color:'#aaa' }}>{stats.otrosRows.length} docs</span>
-                      {stats.varOtros !== null && (
+                      <span style={{ fontSize:11, color:'#aaa' }}>{stats.proveedorRows.length} docs</span>
+                      {stats.varProveedores !== null && (
                         <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4,
-                          background: stats.varOtros > 0 ? '#FEF3C7' : '#D1FAE5',
-                          color: stats.varOtros > 0 ? '#92400E' : '#065F46' }}>
-                          {stats.varOtros > 0 ? '▲' : '▼'} {Math.abs(stats.varOtros).toFixed(1)}%
+                          background: stats.varProveedores > 0 ? '#FEF3C7' : '#D1FAE5',
+                          color: stats.varProveedores > 0 ? '#92400E' : '#065F46' }}>
+                          {stats.varProveedores > 0 ? '▲' : '▼'} {Math.abs(stats.varProveedores).toFixed(1)}%
                         </span>
                       )}
                     </div>
                   </div>
                   <div style={{ background:'#F5F5F0', borderRadius:12, padding:16, border:'1px solid #E0E0D8' }}>
                     <p style={{ fontSize:11, color:'#666', fontWeight:600 }}>Combustible (COPEC)</p>
-                    <p style={{ fontSize:20, fontWeight:700, color:'#333', marginTop:4, ...S.mono }}>{fmtCLP(stats.copecTotal)}</p>
+                    <p style={{ fontSize:20, fontWeight:700, color:'#333', marginTop:4, ...S.mono }}>{fmtCLP(stats.combustibleTotal)}</p>
                     <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6 }}>
-                      <span style={{ fontSize:11, color:'#aaa' }}>{stats.copecRows.length} docs</span>
-                      {stats.varCopec !== null && (
+                      <span style={{ fontSize:11, color:'#aaa' }}>{stats.combustibleRows.length} docs</span>
+                      {stats.varCombustible !== null && (
                         <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4,
-                          background: stats.varCopec > 0 ? '#FEF3C7' : '#D1FAE5',
-                          color: stats.varCopec > 0 ? '#92400E' : '#065F46' }}>
-                          {stats.varCopec > 0 ? '▲' : '▼'} {Math.abs(stats.varCopec).toFixed(1)}%
+                          background: stats.varCombustible > 0 ? '#FEF3C7' : '#D1FAE5',
+                          color: stats.varCombustible > 0 ? '#92400E' : '#065F46' }}>
+                          {stats.varCombustible > 0 ? '▲' : '▼'} {Math.abs(stats.varCombustible).toFixed(1)}%
                         </span>
                       )}
                     </div>
@@ -545,7 +555,7 @@ export default function App() {
                 <div style={{ ...S.sectionTitle, marginTop:20 }}>Principales proveedores de la semana</div>
                 <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
                   {stats.top5.map(([prov, total], i) => {
-                    const pct = stats.otrosTotal > 0 ? (total / stats.otrosTotal) * 100 : 0;
+                    const pct = stats.proveedorTotal > 0 ? (total / stats.proveedorTotal) * 100 : 0;
                     return (
                       <div key={prov} style={{ display:'flex', alignItems:'center', gap:10 }}>
                         <span style={{ fontSize:11, color:'#aaa', width:16, textAlign:'right' }}>{i + 1}</span>
@@ -671,16 +681,16 @@ export default function App() {
               <p style={{ fontSize:7, color:'#0D3B2E', margin:'2px 0 0' }}>{stats.totalDocs} documentos</p>
             </div>
             <div style={{ flex:1, background:'#F5F5F0', borderRadius:5, padding:'7px 10px', border:'1px solid #E0E0D8' }}>
-              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Proveedores ({stats.otrosRows.length})</p>
-              <p style={{ fontSize:13, fontWeight:700, color:'#333', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.otrosTotal)}</p>
-              {stats.varOtros !== null && <p style={{ fontSize:7, margin:'1px 0 0', color: stats.varOtros > 0 ? '#DC2626' : '#059669' }}>
-                {stats.varOtros > 0 ? '▲' : '▼'} {Math.abs(stats.varOtros).toFixed(1)}% vs anterior</p>}
+              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Proveedores ({stats.proveedorRows.length})</p>
+              <p style={{ fontSize:13, fontWeight:700, color:'#333', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.proveedorTotal)}</p>
+              {stats.varProveedores !== null && <p style={{ fontSize:7, margin:'1px 0 0', color: stats.varProveedores > 0 ? '#DC2626' : '#059669' }}>
+                {stats.varProveedores > 0 ? '▲' : '▼'} {Math.abs(stats.varProveedores).toFixed(1)}% vs anterior</p>}
             </div>
             <div style={{ flex:1, background:'#F5F5F0', borderRadius:5, padding:'7px 10px', border:'1px solid #E0E0D8' }}>
-              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Combustible ({stats.copecRows.length})</p>
-              <p style={{ fontSize:13, fontWeight:700, color:'#333', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.copecTotal)}</p>
-              {stats.varCopec !== null && <p style={{ fontSize:7, margin:'1px 0 0', color: stats.varCopec > 0 ? '#DC2626' : '#059669' }}>
-                {stats.varCopec > 0 ? '▲' : '▼'} {Math.abs(stats.varCopec).toFixed(1)}% vs anterior</p>}
+              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Combustible ({stats.combustibleRows.length})</p>
+              <p style={{ fontSize:13, fontWeight:700, color:'#333', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.combustibleTotal)}</p>
+              {stats.varCombustible !== null && <p style={{ fontSize:7, margin:'1px 0 0', color: stats.varCombustible > 0 ? '#DC2626' : '#059669' }}>
+                {stats.varCombustible > 0 ? '▲' : '▼'} {Math.abs(stats.varCombustible).toFixed(1)}% vs anterior</p>}
             </div>
             {stats.avg4Total > 0 && (
               <div style={{ flex:1, background: Math.abs(stats.varVsAvg) > 10 ? '#FFF7ED' : '#F5F5F0', borderRadius:5, padding:'7px 10px',
