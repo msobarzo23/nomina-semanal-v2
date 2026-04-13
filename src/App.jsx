@@ -252,11 +252,14 @@ export default function App() {
   const doSearch = useCallback(() => {
     if(!searchQuery.trim()) { setSearchResults([]); return; }
     const q = searchQuery.trim().toLowerCase();
-    const results = historico.filter(r =>
-      (r.N_DOCUMENTO || '').toLowerCase().includes(q) ||
-      (r.RUT || '').toLowerCase().includes(q) ||
-      (r.DETALLE || '').toLowerCase().includes(q)
-    ).slice(0, 150);
+    // Search across all text fields, also try numeric match for doc numbers
+    const results = historico.filter(r => {
+      const doc = (r.N_DOCUMENTO || '').toString().trim();
+      const rut = (r.RUT || '').toString().trim().toLowerCase();
+      const det = (r.DETALLE || '').toString().trim().toLowerCase();
+      const fecha = (r.FECHA_PAGO || '').toString().trim();
+      return doc.includes(q) || rut.includes(q) || det.includes(q) || fecha.includes(q);
+    }).slice(0, 200);
     setSearchResults(results);
   }, [searchQuery, historico]);
 
@@ -441,11 +444,11 @@ export default function App() {
                           <td style={{ padding:'6px 10px', ...S.mono, fontSize:11, color:'#888' }}>{r.rut}</td>
                           <td style={{ padding:'6px 10px' }}>
                             <input value={r.detalle} onChange={e => updateRow(r.id, 'detalle', e.target.value)}
-                              style={{ width:'100%', border: r.isNC ? '1px solid #FCD34D' : '1px solid transparent', borderRadius:4, padding:'3px 6px',
-                                fontSize:11, background: r.isNC ? '#FFFBEB' : 'transparent', outline:'none',
-                                transition:'all .15s' }}
-                              onFocus={e => { e.target.style.border='1px solid #1D9E75'; e.target.style.background='#fff'; }}
-                              onBlur={e => { e.target.style.border = r.isNC ? '1px solid #FCD34D' : '1px solid transparent'; e.target.style.background = r.isNC ? '#FFFBEB' : 'transparent'; }}/>
+                              style={{ width:'100%', border: r.isNC ? '1px solid #FCD34D' : '1px solid #E0E0D8', borderRadius:4, padding:'3px 6px',
+                                fontSize:11, background: r.isNC ? '#FFFBEB' : '#FAFAF7', outline:'none',
+                                transition:'all .15s', cursor:'text' }}
+                              onFocus={e => { e.target.style.border='1px solid #1D9E75'; e.target.style.background='#fff'; e.target.style.boxShadow='0 0 0 2px rgba(29,158,117,.15)'; }}
+                              onBlur={e => { e.target.style.border = r.isNC ? '1px solid #FCD34D' : '1px solid #E0E0D8'; e.target.style.background = r.isNC ? '#FFFBEB' : '#FAFAF7'; e.target.style.boxShadow='none'; }}/>
                           </td>
                           <td style={{ padding:'6px 10px', textAlign:'right', fontWeight:600, ...S.mono, fontSize:11,
                             color: r.monto < 0 ? '#DC2626' : '#1a1a1a' }}>{fmtCLP(r.monto)}</td>
@@ -615,6 +618,11 @@ export default function App() {
                     fontWeight:600, fontSize:13, border:'none', cursor:'pointer' }}>Buscar</button>
               </div>
               {loadingSheets && <p className="pulse" style={{ fontSize:11, color:'#aaa', marginTop:8 }}>Cargando datos…</p>}
+              {!loadingSheets && historico.length > 0 && (
+                <p style={{ fontSize:10, color:'#bbb', marginTop:6 }}>
+                  {historico.length.toLocaleString('de-DE')} registros cargados · {historico[0]?.FECHA_PAGO} a {historico[historico.length-1]?.FECHA_PAGO}
+                </p>
+              )}
             </div>
 
             {searchResults.length > 0 && (
