@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import { HISTORICO_URL, AUTORIZADORES_URL, COPEC_EXCLUSIONS, CUOTA_RULES, AUTH_LIST } from './config.js';
-import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates } from './utils.js';
+import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates, parseMonto } from './utils.js';
 
 export default function App() {
   const [tab, setTab] = useState("carga");
@@ -181,21 +181,6 @@ export default function App() {
     const COMBUSTIBLE_HIST = new Set(["COPEC S A","COPEC S A (NOTA DE CREDITO)",
       "ESMAX DISTRIBUCION SPA","ESMAX DISTRIBUCION SPA (NOTA DE CREDITO)"]);
     const pagoISO = fechas.viernes; // current payment date
-
-    // Parse MONTO robustly - Google Sheets may format as "3.422.716" or "3422716" or "$3.422.716"
-    const parseMonto = (v) => {
-      if(!v || v === 'nan' || v === '') return 0;
-      let s = v.toString().replace(/[$\s]/g, ''); // remove $ and spaces
-      // If it has dots and no comma, dots are thousand separators (Chilean format)
-      // e.g. "3.422.716" -> 3422716
-      // But "3.42" could be a decimal - check: if last dot group has 3+ digits, it's thousands
-      const dotParts = s.split('.');
-      if(dotParts.length > 2 || (dotParts.length === 2 && dotParts[dotParts.length-1].length === 3)) {
-        s = s.replace(/\./g, ''); // remove all dots (thousand separators)
-      }
-      s = s.replace(',', '.'); // comma as decimal if present
-      return parseFloat(s) || 0;
-    };
 
     const weekTotals = {};
     historico.forEach(h => {
@@ -647,7 +632,7 @@ export default function App() {
                           <td style={{ padding:'5px 10px', fontSize:11, ...S.mono, color:'#888' }}>{r.RUT}</td>
                           <td style={{ padding:'5px 10px', fontSize:11 }}>{r.DETALLE}</td>
                           <td style={{ padding:'5px 10px', fontSize:11, textAlign:'right', fontWeight:600, ...S.mono }}>
-                            {fmtCLP(parseFloat(r.MONTO) || 0)}
+                            {fmtCLP(parseMonto(r.MONTO))}
                           </td>
                           <td style={{ padding:'5px 10px', fontSize:11, textAlign:'center' }}>
                             {r.CUOTAS && r.CUOTAS !== 'nan' && (
