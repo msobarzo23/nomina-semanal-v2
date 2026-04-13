@@ -87,9 +87,13 @@ export default function App() {
     const copecNums = new Set(Object.keys(copecByDoc));
 
     // Build historico doc count for cuota calc
+    // Only count entries with payment date BEFORE current payment date
+    const pagoISO = fmtDateISO(pago);
     const histDocCount = {};
     historico.forEach(h => {
       if(h.AUTORIZADOR === 'LBS' && !COPEC_EXCLUSIONS.has(h.DETALLE)) {
+        // Skip entries from the same or later payment date
+        if(h.FECHA_PAGO && h.FECHA_PAGO >= pagoISO) return;
         const key = `${h.N_DOCUMENTO}|||${h.DETALLE}`;
         histDocCount[key] = (histDocCount[key] || 0) + 1;
       }
@@ -162,14 +166,64 @@ export default function App() {
     const otrosRows = nominaRows.filter(r => !r.esCopec);
     const copecTotal = copecRows.reduce((s, r) => s + r.monto, 0);
     const otrosTotal = otrosRows.reduce((s, r) => s + r.monto, 0);
+    const total = copecTotal + otrosTotal;
     const byAuth = {};
     nominaRows.forEach(r => { byAuth[r.autorizador] = (byAuth[r.autorizador] || 0) + r.monto; });
     const topProvs = {};
     otrosRows.forEach(r => { topProvs[r.detalle] = (topProvs[r.detalle] || 0) + r.monto; });
     const top5 = Object.entries(topProvs).sort((a, b) => b[1] - a[1]).slice(0, 5);
-    return { copecRows, otrosRows, copecTotal, otrosTotal, total: copecTotal + otrosTotal,
-             byAuth, top5, totalDocs: nominaRows.length };
-  }, [nominaRows]);
+
+    // Historical comparison from Google Sheets
+    const COPEC_SET = new Set(["COPEC S A","COPEC S A (LUBRICANTES)","COPEC S A (LUBRICANTES)(NOTA DE CREDITO)",
+      "ESMAX DISTRIBUCION SPA","FLUX SOLAR ENERGIAS RENOVABLES SPA"]);
+    const weekTotals = {};
+    historico.forEach(h => {
+      const f = h.FECHA_PAGO;
+      if(!f) return;
+      if(!weekTotals[f]) weekTotals[f] = { total:0, copec:0, otros:0, docs:0 };
+      const m = parseFloat(h.MONTO) || 0;
+      weekTotals[f].total += m;
+      weekTotals[f].docs += 1;
+      if(COPEC_SET.has(h.DETALLE)) weekTotals[f].copec += m;
+      else weekTotals[f].otros += m;
+    });
+    const sortedWeeks = Object.entries(weekTotals).sort((a,b) => a[0].localeCompare(b[0]));
+
+    // Previous week
+    const prevWeek = sortedWeeks.length > 0 ? sortedWeeks[sortedWeeks.length - 1] : null;
+    const varTotal = prevWeek ? ((total / prevWeek[1].total) - 1) * 100 : null;
+    const varOtros = prevWeek && prevWeek[1].otros ? ((otrosTotal / prevWeek[1].otros) - 1) * 100 : null;
+    const varCopec = prevWeek && prevWeek[1].copec ? ((copecTotal / prevWeek[1].copec) - 1) * 100 : null;
+
+    // 4-week moving average
+    const last4 = sortedWeeks.slice(-4);
+    const avg4Total = last4.length > 0 ? last4.reduce((s,w) => s + w[1].total, 0) / last4.length : 0;
+    const avg4Otros = last4.length > 0 ? last4.reduce((s,w) => s + w[1].otros, 0) / last4.length : 0;
+    const varVsAvg = avg4Total ? ((total / avg4Total) - 1) * 100 : null;
+
+    // Alerts
+    const alerts = [];
+    if(varTotal !== null && varTotal > 15) alerts.push({ type:'warn', text:`Nómina +${varTotal.toFixed(0)}% vs semana anterior` });
+    if(varTotal !== null && varTotal < -15) alerts.push({ type:'good', text:`Nómina ${varTotal.toFixed(0)}% vs semana anterior` });
+    if(varOtros !== null && varOtros > 30) alerts.push({ type:'warn', text:`Proveedores +${varOtros.toFixed(0)}% vs semana anterior` });
+    if(varVsAvg !== null && varVsAvg > 15) alerts.push({ type:'warn', text:`+${varVsAvg.toFixed(0)}% sobre promedio mensual` });
+
+    // New providers (in current but not in last 8 weeks)
+    const recent8 = new Set();
+    sortedWeeks.slice(-8).forEach(([,w]) => {});
+    const recentProvs = new Set();
+    historico.forEach(h => {
+      const sw = sortedWeeks.slice(-8).map(w => w[0]);
+      if(sw.includes(h.FECHA_PAGO) && !COPEC_SET.has(h.DETALLE)) recentProvs.add(h.DETALLE);
+    });
+    const newProvs = otrosRows.filter(r => !recentProvs.has(r.detalle)).map(r => r.detalle);
+    const uniqueNew = [...new Set(newProvs)];
+    if(uniqueNew.length > 0) alerts.push({ type:'info', text:`${uniqueNew.length} proveedor(es) nuevo(s): ${uniqueNew.slice(0,3).join(', ')}${uniqueNew.length>3?'…':''}` });
+
+    return { copecRows, otrosRows, copecTotal, otrosTotal, total, byAuth, top5,
+             totalDocs: nominaRows.length, prevWeek, varTotal, varOtros, varCopec,
+             avg4Total, avg4Otros, varVsAvg, alerts, sortedWeeks };
+  }, [nominaRows, historico]);
 
   // ─── SEARCH ────────────────────────────────────────────────────────
   const doSearch = useCallback(() => {
@@ -407,36 +461,88 @@ export default function App() {
             ) : (<>
               <div style={S.card}>
                 <div style={S.sectionTitle}>Resumen nómina — Pago {fmtDate(parseDateInput(fechas.viernes))}</div>
+
+                {/* Alerts */}
+                {stats.alerts.length > 0 && (
+                  <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:16 }}>
+                    {stats.alerts.map((a, i) => (
+                      <div key={i} style={{ padding:'10px 14px', borderRadius:8, fontSize:12, fontWeight:600, display:'flex', alignItems:'center', gap:8,
+                        background: a.type==='warn'?'#FFF7ED':a.type==='good'?'#F0FDF4':'#EFF6FF',
+                        border: `1px solid ${a.type==='warn'?'#FED7AA':a.type==='good'?'#BBF7D0':'#BFDBFE'}`,
+                        color: a.type==='warn'?'#9A3412':a.type==='good'?'#166534':'#1E40AF' }}>
+                        <span>{a.type==='warn'?'⚠️':a.type==='good'?'✅':'ℹ️'}</span>{a.text}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Main totals with variation */}
                 <div style={S.grid(3)}>
                   <div style={{ background:'#E8F5EF', borderRadius:12, padding:16, border:'1px solid #C5E8D5' }}>
                     <p style={{ fontSize:11, color:'#0D3B2E', fontWeight:600 }}>Total General</p>
                     <p style={{ fontSize:24, fontWeight:800, color:'#0D3B2E', marginTop:4, ...S.mono }}>{fmtCLP(stats.total)}</p>
-                    <p style={{ fontSize:11, color:'#1D9E75', marginTop:4 }}>{stats.totalDocs} documentos</p>
-                  </div>
-                  <div style={{ background:'#F5F5F0', borderRadius:12, padding:16, border:'1px solid #E0E0D8' }}>
-                    <p style={{ fontSize:11, color:'#666', fontWeight:600 }}>Otros Proveedores</p>
-                    <p style={{ fontSize:20, fontWeight:700, color:'#333', marginTop:4, ...S.mono }}>{fmtCLP(stats.otrosTotal)}</p>
-                    <p style={{ fontSize:11, color:'#aaa', marginTop:4 }}>{stats.otrosRows.length} documentos</p>
-                  </div>
-                  <div style={{ background:'#F5F5F0', borderRadius:12, padding:16, border:'1px solid #E0E0D8' }}>
-                    <p style={{ fontSize:11, color:'#666', fontWeight:600 }}>COPEC</p>
-                    <p style={{ fontSize:20, fontWeight:700, color:'#333', marginTop:4, ...S.mono }}>{fmtCLP(stats.copecTotal)}</p>
-                    <p style={{ fontSize:11, color:'#aaa', marginTop:4 }}>{stats.copecRows.length} documentos</p>
-                  </div>
-                </div>
-
-                <div style={{ ...S.sectionTitle, marginTop:20 }}>Gasto por autorizador</div>
-                <div style={S.grid(3, 8)}>
-                  {Object.entries(stats.byAuth).sort((a, b) => b[1] - a[1]).map(([auth, total]) => (
-                    <div key={auth} style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-                      background:'#F5F5F0', borderRadius:8, padding:'10px 14px', border:'1px solid #E0E0D8' }}>
-                      <span style={{ fontSize:12, fontWeight:700, color:'#555' }}>{auth}</span>
-                      <span style={{ fontSize:12, fontWeight:600, color:'#333', ...S.mono }}>{fmtCLP(total)}</span>
+                    <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6 }}>
+                      <span style={{ fontSize:11, color:'#1D9E75' }}>{stats.totalDocs} documentos</span>
+                      {stats.varTotal !== null && (
+                        <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4,
+                          background: stats.varTotal > 0 ? '#FEF3C7' : '#D1FAE5',
+                          color: stats.varTotal > 0 ? '#92400E' : '#065F46' }}>
+                          {stats.varTotal > 0 ? '▲' : '▼'} {Math.abs(stats.varTotal).toFixed(1)}% vs anterior
+                        </span>
+                      )}
                     </div>
-                  ))}
+                  </div>
+                  <div style={{ background:'#F5F5F0', borderRadius:12, padding:16, border:'1px solid #E0E0D8' }}>
+                    <p style={{ fontSize:11, color:'#666', fontWeight:600 }}>Proveedores</p>
+                    <p style={{ fontSize:20, fontWeight:700, color:'#333', marginTop:4, ...S.mono }}>{fmtCLP(stats.otrosTotal)}</p>
+                    <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6 }}>
+                      <span style={{ fontSize:11, color:'#aaa' }}>{stats.otrosRows.length} docs</span>
+                      {stats.varOtros !== null && (
+                        <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4,
+                          background: stats.varOtros > 0 ? '#FEF3C7' : '#D1FAE5',
+                          color: stats.varOtros > 0 ? '#92400E' : '#065F46' }}>
+                          {stats.varOtros > 0 ? '▲' : '▼'} {Math.abs(stats.varOtros).toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ background:'#F5F5F0', borderRadius:12, padding:16, border:'1px solid #E0E0D8' }}>
+                    <p style={{ fontSize:11, color:'#666', fontWeight:600 }}>Combustible (COPEC)</p>
+                    <p style={{ fontSize:20, fontWeight:700, color:'#333', marginTop:4, ...S.mono }}>{fmtCLP(stats.copecTotal)}</p>
+                    <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6 }}>
+                      <span style={{ fontSize:11, color:'#aaa' }}>{stats.copecRows.length} docs</span>
+                      {stats.varCopec !== null && (
+                        <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4,
+                          background: stats.varCopec > 0 ? '#FEF3C7' : '#D1FAE5',
+                          color: stats.varCopec > 0 ? '#92400E' : '#065F46' }}>
+                          {stats.varCopec > 0 ? '▲' : '▼'} {Math.abs(stats.varCopec).toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
-                <div style={{ ...S.sectionTitle, marginTop:20 }}>Top 5 proveedores (sin COPEC)</div>
+                {/* Context: avg 4 weeks */}
+                {stats.avg4Total > 0 && (
+                  <div style={{ marginTop:16, background:'#F9FAFB', borderRadius:10, padding:'12px 16px', border:'1px solid #E5E7EB' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                      <div>
+                        <p style={{ fontSize:11, color:'#666', fontWeight:600 }}>Promedio últimas 4 semanas</p>
+                        <p style={{ fontSize:16, fontWeight:700, color:'#333', marginTop:2, ...S.mono }}>{fmtCLP(stats.avg4Total)}</p>
+                      </div>
+                      <div style={{ textAlign:'right' }}>
+                        <p style={{ fontSize:11, color:'#666' }}>Esta semana vs promedio</p>
+                        <p style={{ fontSize:18, fontWeight:800, marginTop:2, ...S.mono,
+                          color: stats.varVsAvg > 5 ? '#DC2626' : stats.varVsAvg < -5 ? '#059669' : '#333' }}>
+                          {stats.varVsAvg > 0 ? '+' : ''}{stats.varVsAvg?.toFixed(1)}%
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Top 5 proveedores */}
+                <div style={{ ...S.sectionTitle, marginTop:20 }}>Principales proveedores de la semana</div>
                 <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
                   {stats.top5.map(([prov, total], i) => {
                     const pct = stats.otrosTotal > 0 ? (total / stats.otrosTotal) * 100 : 0;
@@ -446,7 +552,10 @@ export default function App() {
                         <div style={{ flex:1 }}>
                           <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
                             <span style={{ fontSize:11, color:'#555', maxWidth:400, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{prov}</span>
-                            <span style={{ fontSize:11, fontWeight:600, color:'#333', ...S.mono }}>{fmtCLP(total)}</span>
+                            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                              <span style={{ fontSize:11, fontWeight:600, color:'#333', ...S.mono }}>{fmtCLP(total)}</span>
+                              <span style={{ fontSize:10, color:'#999' }}>({pct.toFixed(0)}%)</span>
+                            </div>
                           </div>
                           <div style={{ height:6, background:'#EEEEEA', borderRadius:3, overflow:'hidden' }}>
                             <div style={{ height:'100%', borderRadius:3, width:`${Math.min(pct, 100)}%`,
@@ -535,7 +644,7 @@ export default function App() {
       {nominaRows.length > 0 && (
         <div className="print-only" style={{ padding:'0 8mm' }}>
           {/* Print Header */}
-          <div style={{ borderBottom:'3px solid #0D3B2E', paddingBottom:10, marginBottom:14 }}>
+          <div style={{ borderBottom:'3px solid #0D3B2E', paddingBottom:10, marginBottom:12 }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end' }}>
               <div>
                 <h1 style={{ fontSize:17, fontWeight:800, color:'#0D3B2E', letterSpacing:'-.02em', margin:0 }}>
@@ -554,33 +663,51 @@ export default function App() {
             </div>
           </div>
 
-          {/* Print Summary Bar */}
-          <div style={{ display:'flex', gap:6, marginBottom:12 }}>
-            <div style={{ flex:'1.2', background:'#E8F5EF', borderRadius:5, padding:'7px 10px', border:'1px solid #C5E8D5' }}>
+          {/* Print Summary - Gerencia focused */}
+          <div style={{ display:'flex', gap:6, marginBottom:8 }}>
+            <div style={{ flex:'1.3', background:'#E8F5EF', borderRadius:5, padding:'7px 10px', border:'1px solid #C5E8D5' }}>
               <p style={{ fontSize:7, color:'#0D3B2E', fontWeight:700, margin:0, textTransform:'uppercase' }}>Total General</p>
               <p style={{ fontSize:15, fontWeight:800, color:'#0D3B2E', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.total)}</p>
+              <p style={{ fontSize:7, color:'#0D3B2E', margin:'2px 0 0' }}>{stats.totalDocs} documentos</p>
             </div>
             <div style={{ flex:1, background:'#F5F5F0', borderRadius:5, padding:'7px 10px', border:'1px solid #E0E0D8' }}>
-              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Otros ({stats.otrosRows.length})</p>
+              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Proveedores ({stats.otrosRows.length})</p>
               <p style={{ fontSize:13, fontWeight:700, color:'#333', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.otrosTotal)}</p>
+              {stats.varOtros !== null && <p style={{ fontSize:7, margin:'1px 0 0', color: stats.varOtros > 0 ? '#DC2626' : '#059669' }}>
+                {stats.varOtros > 0 ? '▲' : '▼'} {Math.abs(stats.varOtros).toFixed(1)}% vs anterior</p>}
             </div>
             <div style={{ flex:1, background:'#F5F5F0', borderRadius:5, padding:'7px 10px', border:'1px solid #E0E0D8' }}>
-              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>COPEC ({stats.copecRows.length})</p>
+              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Combustible ({stats.copecRows.length})</p>
               <p style={{ fontSize:13, fontWeight:700, color:'#333', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.copecTotal)}</p>
+              {stats.varCopec !== null && <p style={{ fontSize:7, margin:'1px 0 0', color: stats.varCopec > 0 ? '#DC2626' : '#059669' }}>
+                {stats.varCopec > 0 ? '▲' : '▼'} {Math.abs(stats.varCopec).toFixed(1)}% vs anterior</p>}
             </div>
-            {Object.entries(stats.byAuth).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([auth, total]) => (
-              <div key={auth} style={{ background:'#F5F5F0', borderRadius:5, padding:'7px 10px', border:'1px solid #E0E0D8', minWidth:70 }}>
-                <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0 }}>{auth}</p>
-                <p style={{ fontSize:10, fontWeight:700, color:'#333', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(total)}</p>
+            {stats.avg4Total > 0 && (
+              <div style={{ flex:1, background: Math.abs(stats.varVsAvg) > 10 ? '#FFF7ED' : '#F5F5F0', borderRadius:5, padding:'7px 10px',
+                border: `1px solid ${Math.abs(stats.varVsAvg) > 10 ? '#FED7AA' : '#E0E0D8'}` }}>
+                <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Prom. 4 semanas</p>
+                <p style={{ fontSize:13, fontWeight:700, color:'#333', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.avg4Total)}</p>
+                <p style={{ fontSize:7, margin:'1px 0 0', fontWeight:700, color: stats.varVsAvg > 5 ? '#DC2626' : stats.varVsAvg < -5 ? '#059669' : '#666' }}>
+                  {stats.varVsAvg > 0 ? '+' : ''}{stats.varVsAvg?.toFixed(1)}% esta semana</p>
+              </div>
+            )}
+          </div>
+
+          {/* Print Top 5 mini */}
+          <div style={{ display:'flex', gap:4, marginBottom:10 }}>
+            <span style={{ fontSize:7, color:'#999', fontWeight:700, whiteSpace:'nowrap', paddingTop:1 }}>TOP 5 →</span>
+            {stats.top5.map(([prov, total], i) => (
+              <div key={prov} style={{ fontSize:7, color:'#555', background:'#F5F5F0', borderRadius:3, padding:'2px 6px', border:'1px solid #E0E0D8' }}>
+                <span style={{ fontWeight:700 }}>{i+1}.</span> {prov.length > 25 ? prov.slice(0,25)+'…' : prov} <span style={{ fontWeight:700, fontFamily:"'DM Mono',monospace" }}>{fmtCLP(total)}</span>
               </div>
             ))}
           </div>
 
-          {/* Print Table */}
+          {/* Print Table - NO autorizador column */}
           <table style={{ width:'100%', borderCollapse:'collapse', fontSize:8 }}>
             <thead>
               <tr style={{ background:'#0D3B2E' }}>
-                {[{h:'Nº DOC',a:'left'},{h:'RUT',a:'left'},{h:'DETALLE',a:'left'},{h:'MONTO',a:'right'},{h:'CUOTAS',a:'center'},{h:'AUTH',a:'center'}].map(c => (
+                {[{h:'Nº DOC',a:'left'},{h:'RUT',a:'left'},{h:'DETALLE',a:'left'},{h:'MONTO',a:'right'},{h:'CUOTAS',a:'center'}].map(c => (
                   <th key={c.h} style={{ color:'#fff', padding:'4px 5px', textAlign:c.a, fontSize:7, fontWeight:700, letterSpacing:'.05em' }}>{c.h}</th>
                 ))}
               </tr>
@@ -590,11 +717,10 @@ export default function App() {
                 <tr key={r.id} style={{ borderBottom:'1px solid #E8E8E3', background: r.isNC ? '#FFF5F5' : i % 2 ? '#FAFAF7' : '#fff' }}>
                   <td style={{ padding:'3px 5px', fontFamily:"'DM Mono',monospace" }}>{r.nDoc}</td>
                   <td style={{ padding:'3px 5px', fontFamily:"'DM Mono',monospace", color:'#888' }}>{r.rut}</td>
-                  <td style={{ padding:'3px 5px', maxWidth:280, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.detalle}</td>
+                  <td style={{ padding:'3px 5px', maxWidth:320, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.detalle}</td>
                   <td style={{ padding:'3px 5px', textAlign:'right', fontWeight:600, fontFamily:"'DM Mono',monospace",
                     color: r.monto < 0 ? '#DC2626' : '#1a1a1a' }}>{fmtCLP(r.monto)}</td>
                   <td style={{ padding:'3px 5px', textAlign:'center', color:'#2563EB', fontSize:7 }}>{r.cuotas}</td>
-                  <td style={{ padding:'3px 5px', textAlign:'center', fontWeight:700 }}>{r.autorizador}</td>
                 </tr>
               ))}
             </tbody>
@@ -606,7 +732,7 @@ export default function App() {
               Generado: {new Date().toLocaleDateString('es-CL')} · Nómina Semanal v2 · Transportes Bello e Hijos Ltda.
             </p>
             <p style={{ fontSize:7, color:'#999', margin:0 }}>
-              Firma Autorización: ________________________________
+              Firma Gerencia: ________________________________
             </p>
           </div>
         </div>
