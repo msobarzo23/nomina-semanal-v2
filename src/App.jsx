@@ -100,12 +100,12 @@ export default function App() {
 
     dataRows.forEach(row => {
       const venc = parseDate(row[col['Vencimiento']]);
-      const ficha = row[col['Ficha']]?.toString() || '';
-      const esCopec = ficha.toUpperCase().includes('COPEC');
+      const fichaName = row[col['Ficha']]?.toString() || '';
+      const esCopec = fichaName.toUpperCase().includes('COPEC');
       const saldo = parseFloat(row[col['Saldo ($)']]) || 0;
       const numDoc = normDoc(row[col['Número Doc.']]);
-      const rut = row[col['Rut']]?.toString() || '';
-      const razon = row[col['Razón Social']]?.toString() || '';
+      const rut = row[col['ID Ficha']]?.toString() || '';
+      const razon = fichaName;
 
       if(!esCopec && venc && venc < lunes) return;
 
