@@ -657,100 +657,110 @@ export default function App() {
         )}
       </main>
 
-      {/* ═══ PRINT VIEW ═══ */}
+      {/* ═══ PRINT VIEW — PORTRAIT ═══ */}
       {nominaRows.length > 0 && (
-        <div className="print-only" style={{ padding:'0 8mm' }}>
+        <div className="print-only" style={{ padding:'0 2mm', fontSize:8 }}>
           {/* Print Header */}
-          <div style={{ borderBottom:'3px solid #0D3B2E', paddingBottom:10, marginBottom:12 }}>
+          <div style={{ borderBottom:'2.5px solid #0D3B2E', paddingBottom:8, marginBottom:10 }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end' }}>
               <div>
-                <h1 style={{ fontSize:17, fontWeight:800, color:'#0D3B2E', letterSpacing:'-.02em', margin:0 }}>
+                <h1 style={{ fontSize:15, fontWeight:800, color:'#0D3B2E', letterSpacing:'-.02em', margin:0 }}>
                   NÓMINA DE PAGO — VALE VISTA
                 </h1>
-                <p style={{ fontSize:10, color:'#666', margin:'2px 0 0' }}>Transportes Bello e Hijos Ltda. · RUT 88.397.100-0</p>
+                <p style={{ fontSize:9, color:'#666', margin:'2px 0 0' }}>Transportes Bello e Hijos Ltda. · RUT 88.397.100-0</p>
               </div>
               <div style={{ textAlign:'right' }}>
-                <p style={{ fontSize:14, fontWeight:700, color:'#0D3B2E', margin:0 }}>
+                <p style={{ fontSize:13, fontWeight:700, color:'#0D3B2E', margin:0 }}>
                   Pago: {fmtDate(parseDateInput(fechas.viernes))}
                 </p>
-                <p style={{ fontSize:9, color:'#888', margin:'2px 0 0' }}>
+                <p style={{ fontSize:8, color:'#888', margin:'2px 0 0' }}>
                   Semana {fmtDate(parseDateInput(fechas.lunes))} al {fmtDate(parseDateInput(fechas.domingo))}
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Print Summary - Gerencia focused */}
-          <div style={{ display:'flex', gap:6, marginBottom:8 }}>
-            <div style={{ flex:'1.3', background:'#E8F5EF', borderRadius:5, padding:'7px 10px', border:'1px solid #C5E8D5' }}>
+          {/* Print Summary - 2x2 grid for portrait */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5, marginBottom:8 }}>
+            <div style={{ background:'#E8F5EF', borderRadius:4, padding:'6px 8px', border:'1px solid #C5E8D5' }}>
               <p style={{ fontSize:7, color:'#0D3B2E', fontWeight:700, margin:0, textTransform:'uppercase' }}>Total General</p>
-              <p style={{ fontSize:15, fontWeight:800, color:'#0D3B2E', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.total)}</p>
-              <p style={{ fontSize:7, color:'#0D3B2E', margin:'2px 0 0' }}>{stats.totalDocs} documentos</p>
+              <p style={{ fontSize:14, fontWeight:800, color:'#0D3B2E', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.total)}</p>
+              <p style={{ fontSize:7, color:'#0D3B2E', margin:'1px 0 0' }}>{stats.totalDocs} documentos
+                {stats.varTotal !== null && <span style={{ marginLeft:6, fontWeight:700, color: stats.varTotal > 0 ? '#DC2626' : '#059669' }}>
+                  {stats.varTotal > 0 ? '▲' : '▼'} {Math.abs(stats.varTotal).toFixed(1)}% vs ant.
+                </span>}
+              </p>
             </div>
-            <div style={{ flex:1, background:'#F5F5F0', borderRadius:5, padding:'7px 10px', border:'1px solid #E0E0D8' }}>
-              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Proveedores ({stats.proveedorRows.length})</p>
+            <div style={{ background:'#F5F5F0', borderRadius:4, padding:'6px 8px', border:'1px solid #E0E0D8' }}>
+              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Proveedores ({stats.proveedorRows.length} docs)</p>
               <p style={{ fontSize:13, fontWeight:700, color:'#333', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.proveedorTotal)}</p>
-              {stats.varProveedores !== null && <p style={{ fontSize:7, margin:'1px 0 0', color: stats.varProveedores > 0 ? '#DC2626' : '#059669' }}>
-                {stats.varProveedores > 0 ? '▲' : '▼'} {Math.abs(stats.varProveedores).toFixed(1)}% vs anterior</p>}
+              {stats.varProveedores !== null && <p style={{ fontSize:7, margin:'1px 0 0', fontWeight:700, color: stats.varProveedores > 0 ? '#DC2626' : '#059669' }}>
+                {stats.varProveedores > 0 ? '▲' : '▼'} {Math.abs(stats.varProveedores).toFixed(1)}% vs semana anterior</p>}
             </div>
-            <div style={{ flex:1, background:'#F5F5F0', borderRadius:5, padding:'7px 10px', border:'1px solid #E0E0D8' }}>
-              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Combustible ({stats.combustibleRows.length})</p>
+            <div style={{ background:'#F5F5F0', borderRadius:4, padding:'6px 8px', border:'1px solid #E0E0D8' }}>
+              <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Combustible ({stats.combustibleRows.length} docs)</p>
               <p style={{ fontSize:13, fontWeight:700, color:'#333', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.combustibleTotal)}</p>
-              {stats.varCombustible !== null && <p style={{ fontSize:7, margin:'1px 0 0', color: stats.varCombustible > 0 ? '#DC2626' : '#059669' }}>
-                {stats.varCombustible > 0 ? '▲' : '▼'} {Math.abs(stats.varCombustible).toFixed(1)}% vs anterior</p>}
+              {stats.varCombustible !== null && <p style={{ fontSize:7, margin:'1px 0 0', fontWeight:700, color: stats.varCombustible > 0 ? '#DC2626' : '#059669' }}>
+                {stats.varCombustible > 0 ? '▲' : '▼'} {Math.abs(stats.varCombustible).toFixed(1)}% vs semana anterior</p>}
             </div>
             {stats.avg4Total > 0 && (
-              <div style={{ flex:1, background: Math.abs(stats.varVsAvg) > 10 ? '#FFF7ED' : '#F5F5F0', borderRadius:5, padding:'7px 10px',
+              <div style={{ background: Math.abs(stats.varVsAvg) > 10 ? '#FFF7ED' : '#F5F5F0', borderRadius:4, padding:'6px 8px',
                 border: `1px solid ${Math.abs(stats.varVsAvg) > 10 ? '#FED7AA' : '#E0E0D8'}` }}>
-                <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Prom. 4 semanas</p>
+                <p style={{ fontSize:7, color:'#666', fontWeight:700, margin:0, textTransform:'uppercase' }}>Promedio 4 semanas</p>
                 <p style={{ fontSize:13, fontWeight:700, color:'#333', margin:'2px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.avg4Total)}</p>
                 <p style={{ fontSize:7, margin:'1px 0 0', fontWeight:700, color: stats.varVsAvg > 5 ? '#DC2626' : stats.varVsAvg < -5 ? '#059669' : '#666' }}>
-                  {stats.varVsAvg > 0 ? '+' : ''}{stats.varVsAvg?.toFixed(1)}% esta semana</p>
+                  {stats.varVsAvg > 0 ? '+' : ''}{stats.varVsAvg?.toFixed(1)}% esta semana vs promedio</p>
               </div>
             )}
           </div>
 
-          {/* Print Top 5 mini */}
-          <div style={{ display:'flex', gap:4, marginBottom:10 }}>
-            <span style={{ fontSize:7, color:'#999', fontWeight:700, whiteSpace:'nowrap', paddingTop:1 }}>TOP 5 →</span>
+          {/* Print Top 5 compact */}
+          <div style={{ display:'flex', gap:3, marginBottom:8, flexWrap:'wrap' }}>
+            <span style={{ fontSize:6, color:'#999', fontWeight:700, whiteSpace:'nowrap', paddingTop:1 }}>TOP 5:</span>
             {stats.top5.map(([prov, total], i) => (
-              <div key={prov} style={{ fontSize:7, color:'#555', background:'#F5F5F0', borderRadius:3, padding:'2px 6px', border:'1px solid #E0E0D8' }}>
-                <span style={{ fontWeight:700 }}>{i+1}.</span> {prov.length > 25 ? prov.slice(0,25)+'…' : prov} <span style={{ fontWeight:700, fontFamily:"'DM Mono',monospace" }}>{fmtCLP(total)}</span>
-              </div>
+              <span key={prov} style={{ fontSize:6, color:'#555' }}>
+                <span style={{ fontWeight:700 }}>{i+1}.</span> {prov.length > 20 ? prov.slice(0,20)+'…' : prov} <span style={{ fontWeight:700, fontFamily:"'DM Mono',monospace" }}>{fmtCLP(total)}</span>
+                {i < stats.top5.length - 1 ? ' · ' : ''}
+              </span>
             ))}
           </div>
 
-          {/* Print Table - NO autorizador column */}
-          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:8 }}>
+          {/* Print Table - Portrait optimized, compact detalle */}
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:7.5 }}>
             <thead>
               <tr style={{ background:'#0D3B2E' }}>
-                {[{h:'Nº DOC',a:'left'},{h:'RUT',a:'left'},{h:'DETALLE',a:'left'},{h:'MONTO',a:'right'},{h:'CUOTAS',a:'center'}].map(c => (
-                  <th key={c.h} style={{ color:'#fff', padding:'4px 5px', textAlign:c.a, fontSize:7, fontWeight:700, letterSpacing:'.05em' }}>{c.h}</th>
-                ))}
+                <th style={{ color:'#fff', padding:'3px 4px', textAlign:'left', fontSize:6.5, fontWeight:700, letterSpacing:'.04em', width:'11%' }}>Nº DOC</th>
+                <th style={{ color:'#fff', padding:'3px 4px', textAlign:'left', fontSize:6.5, fontWeight:700, letterSpacing:'.04em', width:'14%' }}>RUT</th>
+                <th style={{ color:'#fff', padding:'3px 4px', textAlign:'left', fontSize:6.5, fontWeight:700, letterSpacing:'.04em' }}>DETALLE</th>
+                <th style={{ color:'#fff', padding:'3px 4px', textAlign:'right', fontSize:6.5, fontWeight:700, letterSpacing:'.04em', width:'15%' }}>MONTO</th>
+                <th style={{ color:'#fff', padding:'3px 4px', textAlign:'center', fontSize:6.5, fontWeight:700, letterSpacing:'.04em', width:'7%' }}>CUOTAS</th>
               </tr>
             </thead>
             <tbody>
               {nominaRows.map((r, i) => (
                 <tr key={r.id} style={{ borderBottom:'1px solid #E8E8E3', background: r.isNC ? '#FFF5F5' : i % 2 ? '#FAFAF7' : '#fff' }}>
-                  <td style={{ padding:'3px 5px', fontFamily:"'DM Mono',monospace" }}>{r.nDoc}</td>
-                  <td style={{ padding:'3px 5px', fontFamily:"'DM Mono',monospace", color:'#888' }}>{r.rut}</td>
-                  <td style={{ padding:'3px 5px', maxWidth:320, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.detalle}</td>
-                  <td style={{ padding:'3px 5px', textAlign:'right', fontWeight:600, fontFamily:"'DM Mono',monospace",
+                  <td style={{ padding:'2px 4px', fontFamily:"'DM Mono',monospace", fontSize:7 }}>{r.nDoc}</td>
+                  <td style={{ padding:'2px 4px', fontFamily:"'DM Mono',monospace", color:'#888', fontSize:7 }}>{r.rut}</td>
+                  <td style={{ padding:'2px 4px', fontSize:7, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:180 }}>{r.detalle}</td>
+                  <td style={{ padding:'2px 4px', textAlign:'right', fontWeight:600, fontFamily:"'DM Mono',monospace", fontSize:7,
                     color: r.monto < 0 ? '#DC2626' : '#1a1a1a' }}>{fmtCLP(r.monto)}</td>
-                  <td style={{ padding:'3px 5px', textAlign:'center', color:'#2563EB', fontSize:7 }}>{r.cuotas}</td>
+                  <td style={{ padding:'2px 4px', textAlign:'center', color:'#2563EB', fontSize:6.5 }}>{r.cuotas}</td>
                 </tr>
               ))}
             </tbody>
           </table>
 
-          {/* Print Footer */}
-          <div style={{ marginTop:14, borderTop:'2px solid #0D3B2E', paddingTop:8, display:'flex', justifyContent:'space-between' }}>
-            <p style={{ fontSize:7, color:'#999', margin:0 }}>
-              Generado: {new Date().toLocaleDateString('es-CL')} · Nómina Semanal v2 · Transportes Bello e Hijos Ltda.
-            </p>
-            <p style={{ fontSize:7, color:'#999', margin:0 }}>
-              Firma Gerencia: ________________________________
-            </p>
+          {/* Print Footer with signature */}
+          <div style={{ marginTop:20, borderTop:'2px solid #0D3B2E', paddingTop:10 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end' }}>
+              <p style={{ fontSize:7, color:'#999', margin:0 }}>
+                Generado: {new Date().toLocaleDateString('es-CL')} · Nómina Semanal v2 · Transportes Bello e Hijos Ltda.
+              </p>
+              <div style={{ textAlign:'center' }}>
+                <div style={{ borderBottom:'1px solid #333', width:200, marginBottom:4 }}>&nbsp;</div>
+                <p style={{ fontSize:7, color:'#555', fontWeight:700, margin:0 }}>Firma Gerente General</p>
+              </div>
+            </div>
           </div>
         </div>
       )}
