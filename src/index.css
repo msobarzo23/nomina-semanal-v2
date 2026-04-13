@@ -21,8 +21,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
 
 /* Print */
 @media print{
-  @page{size:landscape;margin:10mm 8mm}
-  body{background:#fff!important;font-size:9px!important}
+  @page{size:portrait;margin:8mm 7mm}
+  body{background:#fff!important;font-size:8px!important}
   .no-print{display:none!important}
   .print-only{display:block!important}
 }
