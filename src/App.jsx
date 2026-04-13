@@ -105,14 +105,13 @@ export default function App() {
     dataRows.forEach(row => {
       const venc = parseDate(row[col['Vencimiento']]);
       const fichaName = row[col['Ficha']]?.toString() || '';
+      const razon = fichaName;
       const esCopec = fichaName.toUpperCase().includes('COPEC');
-      // Combustible = solo COPEC puro, no lubricantes
       const isCombustible = razon === 'COPEC S A' || razon === 'COPEC S A (NOTA DE CREDITO)' ||
                             razon === 'ESMAX DISTRIBUCION SPA' || razon === 'ESMAX DISTRIBUCION SPA (NOTA DE CREDITO)';
       const saldo = parseFloat(row[col['Saldo ($)']]) || 0;
       const numDoc = normDoc(row[col['Número Doc.']]);
       const rut = row[col['ID Ficha']]?.toString() || '';
-      const razon = fichaName;
 
       if(!esCopec && venc && venc < lunes) return;
 
