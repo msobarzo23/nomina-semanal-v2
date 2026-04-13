@@ -46,6 +46,18 @@ export const normDoc = v => {
   return v.toString().trim().replace(/\.0+$/, '');
 };
 
+// Parse MONTO robustly - Google Sheets Chilean format uses dots as thousand separators
+export const parseMonto = (v) => {
+  if(!v || v === 'nan' || v === '') return 0;
+  let s = v.toString().replace(/[$\s]/g, '');
+  const dotParts = s.split('.');
+  if(dotParts.length > 2 || (dotParts.length === 2 && dotParts[dotParts.length-1].length === 3)) {
+    s = s.replace(/\./g, '');
+  }
+  s = s.replace(',', '.');
+  return parseFloat(s) || 0;
+};
+
 export const getWeekDates = () => {
   const today = new Date();
   const day = today.getDay();
