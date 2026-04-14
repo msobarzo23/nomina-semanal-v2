@@ -657,43 +657,146 @@ export default function App() {
               {[
                 {
                   key: 'petroleo',
+                  emoji: '⛽',
                   titulo: 'PETRÓLEO',
                   subtitulo: 'COPEC',
+                  asunto: `⛽ Nómina Petróleo COPEC — Pago ${fechas.viernes}`,
                   color: '#0D3B2E',
+                  colorLight: '#1D9E75',
                   bgHeader: '#E8F5EF',
                   borderHeader: '#C5E8D5',
+                  bgStripe: '#F0FAF5',
                   rows: correoLBS.petroleo,
                   total: correoLBS.totalPetroleo,
                   showCuotas: false,
+                  showProveedor: false,
                 },
                 {
                   key: 'lubricantes',
+                  emoji: '🛢️',
                   titulo: 'LUBRICANTES',
                   subtitulo: 'COPEC S A (LUBRICANTES)',
+                  asunto: `🛢️ Nómina Lubricantes COPEC — Pago ${fechas.viernes}`,
                   color: '#14614B',
+                  colorLight: '#22C55E',
                   bgHeader: '#F0FDF4',
                   borderHeader: '#BBF7D0',
+                  bgStripe: '#F0FDF4',
                   rows: correoLBS.lubricantes,
                   total: correoLBS.totalLubricantes,
                   showCuotas: false,
+                  showProveedor: false,
                 },
                 {
                   key: 'neumaticos',
+                  emoji: '🔧',
                   titulo: 'NEUMÁTICOS',
                   subtitulo: 'Neumáticos',
+                  asunto: `🔧 Nómina Neumáticos — Pago ${fechas.viernes}`,
                   color: '#1D4ED8',
+                  colorLight: '#3B82F6',
                   bgHeader: '#EFF6FF',
                   borderHeader: '#BFDBFE',
+                  bgStripe: '#F0F5FF',
                   rows: correoLBS.neumaticos,
                   total: correoLBS.totalNeumaticos,
                   showCuotas: true,
+                  showProveedor: true,
                 },
-              ].map(({ key, titulo, subtitulo, color, bgHeader, borderHeader, rows, total, showCuotas }) => (
+              ].map(({ key, emoji, titulo, subtitulo, asunto, color, colorLight, bgHeader, borderHeader, bgStripe, rows, total, showCuotas, showProveedor }) => {
+                // Número de columnas según tipo
+                const numCols = 3 + (showCuotas ? 1 : 0) + (showProveedor ? 1 : 0);
+
+                // Genera HTML del correo para copiar — se ve con formato al pegar en Outlook/Gmail
+                const buildHTML = () => {
+                  const filasTR = rows.map((r, i) => {
+                    const bg = i % 2 === 0 ? '#ffffff' : bgStripe;
+                    const montoColor = r.monto < 0 ? '#DC2626' : '#1a1a1a';
+                    const montoStr = fmtCLP(r.monto);
+                    const provTd = showProveedor
+                      ? `<td style="padding:8px 12px;font-size:13px;color:#444;border-bottom:1px solid #E8E8E3;">${r.detalle}</td>`
+                      : '';
+                    const cuotaTd = showCuotas
+                      ? `<td style="padding:8px 12px;text-align:center;border-bottom:1px solid #E8E8E3;">
+                          ${r.cuotas ? `<span style="background:#DBEAFE;color:#1D4ED8;font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;">${r.cuotas}</span>` : ''}
+                        </td>`
+                      : '';
+                    return `<tr style="background:${bg};">
+                      <td style="padding:8px 12px;font-family:monospace;font-size:13px;border-bottom:1px solid #E8E8E3;">${r.nDoc}</td>
+                      <td style="padding:8px 12px;text-align:center;font-size:13px;color:#555;border-bottom:1px solid #E8E8E3;">${fechas.viernes}</td>
+                      ${provTd}
+                      <td style="padding:8px 12px;text-align:right;font-family:monospace;font-weight:600;font-size:13px;color:${montoColor};border-bottom:1px solid #E8E8E3;">${montoStr}</td>
+                      ${cuotaTd}
+                    </tr>`;
+                  }).join('');
+
+                  const provTh = showProveedor
+                    ? `<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:700;color:#555;background:#F3F4F6;border-bottom:2px solid #E5E7EB;text-transform:uppercase;letter-spacing:.04em;">Proveedor</th>`
+                    : '';
+                  const cuotaTh = showCuotas
+                    ? `<th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:700;color:#555;background:#F3F4F6;border-bottom:2px solid #E5E7EB;text-transform:uppercase;letter-spacing:.04em;">Cuota</th>`
+                    : '';
+                  const totalTdExtra = showProveedor ? `<td style="padding:10px 12px;background:#F8F9FA;border-top:2px solid #dee2e6;"></td>` : '';
+                  const totalCuotaTd = showCuotas ? `<td style="padding:10px 12px;background:#F8F9FA;border-top:2px solid #dee2e6;"></td>` : '';
+
+                  return `<!DOCTYPE html><html><body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background:#f4f4f0;">
+                  <table width="100%" cellpadding="0" cellspacing="0" style="max-width:680px;margin:0 auto;background:#f4f4f0;">
+                    <tr><td style="padding:32px 24px 16px;">
+                      <!-- Header banner -->
+                      <table width="100%" cellpadding="0" cellspacing="0" style="background:linear-gradient(135deg,${color} 0%,${colorLight} 100%);border-radius:12px 12px 0 0;">
+                        <tr><td style="padding:24px 28px;">
+                          <p style="margin:0;font-size:26px;line-height:1;">${emoji}</p>
+                          <p style="margin:6px 0 0;font-size:20px;font-weight:800;color:#fff;letter-spacing:.04em;">${titulo}</p>
+                          <p style="margin:4px 0 0;font-size:12px;color:rgba(255,255,255,.75);">Transportes Bello e Hijos Ltda. &nbsp;·&nbsp; Fecha de pago: <strong>${fechas.viernes}</strong></p>
+                        </td></tr>
+                      </table>
+                      <!-- Body -->
+                      <table width="100%" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:0 0 12px 12px;border:1px solid #E0E0D8;border-top:none;">
+                        <tr><td style="padding:24px 28px 8px;">
+                          <p style="margin:0;font-size:14px;color:#333;">Estimado Luis,</p>
+                          <p style="margin:8px 0 0;font-size:14px;color:#333;font-weight:700;">Favor revisar y dar V° B° para pago.</p>
+                        </td></tr>
+                        <tr><td style="padding:16px 28px 28px;">
+                          <!-- Tabla de facturas -->
+                          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border-radius:8px;overflow:hidden;border:1px solid #E0E0D8;">
+                            <thead>
+                              <tr style="background:${color};">
+                                <th colspan="${numCols}" style="padding:10px 12px;text-align:center;font-size:13px;font-weight:800;color:#fff;letter-spacing:.06em;">${subtitulo}</th>
+                              </tr>
+                              <tr>
+                                <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:700;color:#555;background:#F3F4F6;border-bottom:2px solid #E5E7EB;text-transform:uppercase;letter-spacing:.04em;">N° Documento</th>
+                                <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:700;color:#555;background:#F3F4F6;border-bottom:2px solid #E5E7EB;text-transform:uppercase;letter-spacing:.04em;">Fecha pago</th>
+                                ${provTh}
+                                <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:700;color:#555;background:#F3F4F6;border-bottom:2px solid #E5E7EB;text-transform:uppercase;letter-spacing:.04em;">Monto</th>
+                                ${cuotaTh}
+                              </tr>
+                            </thead>
+                            <tbody>${filasTR}</tbody>
+                            <tfoot>
+                              <tr>
+                                <td style="padding:10px 12px;font-weight:800;font-size:14px;color:#111;background:#F8F9FA;border-top:2px solid #dee2e6;">TOTAL</td>
+                                <td style="padding:10px 12px;background:#F8F9FA;border-top:2px solid #dee2e6;"></td>
+                                ${totalTdExtra}
+                                <td style="padding:10px 12px;text-align:right;font-family:monospace;font-weight:800;font-size:15px;color:${color};background:#F8F9FA;border-top:2px solid #dee2e6;">${fmtCLP(total)}</td>
+                                ${totalCuotaTd}
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </td></tr>
+                      </table>
+                      <!-- Footer -->
+                      <p style="text-align:center;font-size:11px;color:#aaa;margin:12px 0 0;">Generado por Sistema Nómina Semanal · Transportes Bello e Hijos Ltda.</p>
+                    </td></tr>
+                  </table></body></html>`;
+                };
+
+                return (
                 <div key={key} style={{ ...S.card, marginBottom:16 }}>
                   {/* Encabezado del bloque */}
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
                     <div style={{ background:bgHeader, border:`1px solid ${borderHeader}`, borderRadius:8,
                       padding:'6px 16px', display:'inline-flex', alignItems:'center', gap:10 }}>
+                      <span style={{ fontSize:18 }}>{emoji}</span>
                       <span style={{ fontSize:14, fontWeight:800, color, letterSpacing:'.05em' }}>{titulo}</span>
                       <span style={{ fontSize:11, color, opacity:.65 }}>
                         {rows.length} doc{rows.length !== 1 ? 's' : ''} · {fmtCLP(total)}
@@ -701,34 +804,33 @@ export default function App() {
                     </div>
                     <button
                       onClick={() => {
-                        // Copia en texto plano con tabuladores (formato tabla para pegar en correo/Excel)
-                        const encabezado = showCuotas
-                          ? ['Nº Documento', 'Fecha pago', 'Monto', 'Cuota'].join('\t')
-                          : ['Nº Documento', 'Fecha pago', 'Monto'].join('\t');
-                        const filas = rows.map(r => showCuotas
-                          ? [r.nDoc, fechas.viernes, r.monto.toLocaleString('de-DE'), r.cuotas || ''].join('\t')
-                          : [r.nDoc, fechas.viernes, r.monto.toLocaleString('de-DE')].join('\t')
-                        );
-                        const totalFila = showCuotas
-                          ? ['TOTAL', '', total.toLocaleString('de-DE'), ''].join('\t')
-                          : ['TOTAL', '', total.toLocaleString('de-DE')].join('\t');
-                        const texto = [
-                          `Estimado Luis,`,
-                          ``,
-                          `Favor revisar y dar Vº Bº para pago.`,
-                          ``,
-                          `${subtitulo}`,
-                          encabezado,
-                          ...filas,
-                          totalFila,
-                        ].join('\n');
-                        navigator.clipboard.writeText(texto).then(() =>
-                          showToast(`✓ Correo ${titulo} copiado al portapapeles`)
-                        );
+                        // Copia HTML al portapapeles — se ve con formato al pegar en Outlook/Gmail
+                        const html = buildHTML();
+                        try {
+                          const blob = new Blob([html], { type: 'text/html' });
+                          const data = new ClipboardItem({ 'text/html': blob });
+                          navigator.clipboard.write([data]).then(() =>
+                            showToast(`✓ Correo ${titulo} copiado — pega directo en Outlook o Gmail`)
+                          );
+                        } catch {
+                          // Fallback texto plano si el navegador no soporta ClipboardItem
+                          const filas = rows.map(r => {
+                            const base = [r.nDoc, fechas.viernes];
+                            if(showProveedor) base.push(r.detalle);
+                            base.push(r.monto.toLocaleString('de-DE'));
+                            if(showCuotas) base.push(r.cuotas || '');
+                            return base.join('\t');
+                          });
+                          navigator.clipboard.writeText(
+                            [`Estimado Luis,`, ``, `Favor revisar y dar Vº Bº para pago.`, ``, subtitulo, ...filas,
+                             `TOTAL\t\t${total.toLocaleString('de-DE')}`].join('\n')
+                          ).then(() => showToast(`✓ Correo ${titulo} copiado`));
+                        }
                       }}
-                      style={{ padding:'8px 20px', borderRadius:8, background:'#1D9E75', color:'#fff',
+                      style={{ padding:'9px 22px', borderRadius:8, background:color, color:'#fff',
                         fontWeight:700, fontSize:12, border:'none', cursor:'pointer',
-                        display:'flex', alignItems:'center', gap:6, boxShadow:'0 2px 8px rgba(29,158,117,.25)' }}>
+                        display:'flex', alignItems:'center', gap:6,
+                        boxShadow:`0 3px 10px ${color}55` }}>
                       📋 Copiar correo
                     </button>
                   </div>
@@ -739,69 +841,88 @@ export default function App() {
                     </div>
                   ) : (
                     /* Vista previa del correo */
-                    <div style={{ background:'#FAFAF7', borderRadius:8, border:'1px solid #E0E0D8', padding:20 }}>
-                      <p style={{ fontSize:12, color:'#555', marginBottom:6 }}>Estimado Luis,</p>
-                      <p style={{ fontSize:12, color:'#333', fontWeight:600, marginBottom:16 }}>
-                        Favor revisar y dar Vº Bº para pago.
-                      </p>
-                      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-                        <thead>
-                          <tr>
-                            <th colSpan={showCuotas ? 4 : 3}
-                              style={{ background:color, color:'#fff', padding:'7px 12px',
-                                textAlign:'center', fontWeight:800, letterSpacing:'.05em',
-                                fontSize:12, borderRadius:'6px 6px 0 0' }}>
-                              {subtitulo}
-                            </th>
-                          </tr>
-                          <tr style={{ background:'#EFEFEA' }}>
-                            <th style={{ padding:'5px 10px', textAlign:'left',   fontSize:10, fontWeight:700, color:'#555', borderBottom:'1px solid #ddd' }}>Nº Documento</th>
-                            <th style={{ padding:'5px 10px', textAlign:'center', fontSize:10, fontWeight:700, color:'#555', borderBottom:'1px solid #ddd' }}>Fecha pago</th>
-                            <th style={{ padding:'5px 10px', textAlign:'right',  fontSize:10, fontWeight:700, color:'#555', borderBottom:'1px solid #ddd' }}>Monto</th>
-                            {showCuotas && <th style={{ padding:'5px 10px', textAlign:'center', fontSize:10, fontWeight:700, color:'#555', borderBottom:'1px solid #ddd' }}>Cuota</th>}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {rows.map((r, i) => (
-                            <tr key={r.id} style={{ background: i % 2 ? '#F5F5F0' : '#fff', borderBottom:'1px solid #EFEFEA' }}>
-                              <td style={{ padding:'5px 10px', fontFamily:"'DM Mono',monospace", fontSize:11 }}>{r.nDoc}</td>
-                              <td style={{ padding:'5px 10px', textAlign:'center', fontSize:11 }}>{fechas.viernes}</td>
-                              <td style={{ padding:'5px 10px', textAlign:'right', fontWeight:600,
-                                fontFamily:"'DM Mono',monospace", fontSize:11,
-                                color: r.monto < 0 ? '#DC2626' : '#1a1a1a' }}>
-                                {fmtCLP(r.monto)}
-                              </td>
-                              {showCuotas && (
-                                <td style={{ padding:'5px 10px', textAlign:'center' }}>
-                                  {r.cuotas && (
-                                    <span style={{ background:'#DBEAFE', color:'#1D4ED8',
-                                      fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:99 }}>
-                                      {r.cuotas}
-                                    </span>
-                                  )}
-                                </td>
-                              )}
+                    <div style={{ borderRadius:10, overflow:'hidden', border:`1px solid ${borderHeader}` }}>
+                      {/* Banner de color */}
+                      <div style={{ background:`linear-gradient(135deg, ${color} 0%, ${colorLight} 100%)`, padding:'18px 22px' }}>
+                        <div style={{ fontSize:22, marginBottom:4 }}>{emoji}</div>
+                        <div style={{ fontSize:16, fontWeight:800, color:'#fff', letterSpacing:'.04em' }}>{titulo}</div>
+                        <div style={{ fontSize:11, color:'rgba(255,255,255,.75)', marginTop:3 }}>
+                          Transportes Bello e Hijos Ltda. · Fecha de pago: <strong>{fechas.viernes}</strong>
+                        </div>
+                      </div>
+                      {/* Cuerpo */}
+                      <div style={{ background:'#fff', padding:'20px 22px 4px' }}>
+                        <p style={{ fontSize:13, color:'#333', margin:'0 0 6px' }}>Estimado Luis,</p>
+                        <p style={{ fontSize:13, color:'#333', fontWeight:700, margin:'0 0 18px' }}>Favor revisar y dar V° B° para pago.</p>
+                      </div>
+                      {/* Tabla */}
+                      <div style={{ padding:'0 22px 22px', background:'#fff' }}>
+                        <table style={{ width:'100%', borderCollapse:'collapse', borderRadius:8, overflow:'hidden', border:'1px solid #E0E0D8', fontSize:12 }}>
+                          <thead>
+                            <tr style={{ background:color }}>
+                              <th colSpan={numCols}
+                                style={{ color:'#fff', padding:'9px 12px', textAlign:'center',
+                                  fontWeight:800, letterSpacing:'.06em', fontSize:12 }}>
+                                {subtitulo}
+                              </th>
                             </tr>
-                          ))}
-                          {/* Fila de total */}
-                          <tr style={{ background:'#F0F0EA', borderTop:'2px solid #ccc' }}>
-                            <td colSpan={showCuotas ? 2 : 2}
-                              style={{ padding:'7px 10px', fontWeight:800, fontSize:12, color:'#333' }}>
-                              TOTAL
-                            </td>
-                            <td style={{ padding:'7px 10px', textAlign:'right', fontWeight:800,
-                              fontFamily:"'DM Mono',monospace", fontSize:13,
-                              color: total < 0 ? '#DC2626' : color }}>
-                              {fmtCLP(total)}
-                            </td>
-                            {showCuotas && <td />}
-                          </tr>
-                        </tbody>
-                      </table>
+                            <tr style={{ background:'#F3F4F6' }}>
+                              <th style={{ padding:'7px 12px', textAlign:'left',   fontSize:10, fontWeight:700, color:'#555', borderBottom:'2px solid #E5E7EB', textTransform:'uppercase', letterSpacing:'.04em' }}>N° Documento</th>
+                              <th style={{ padding:'7px 12px', textAlign:'center', fontSize:10, fontWeight:700, color:'#555', borderBottom:'2px solid #E5E7EB', textTransform:'uppercase', letterSpacing:'.04em' }}>Fecha pago</th>
+                              {showProveedor && <th style={{ padding:'7px 12px', textAlign:'left', fontSize:10, fontWeight:700, color:'#555', borderBottom:'2px solid #E5E7EB', textTransform:'uppercase', letterSpacing:'.04em' }}>Proveedor</th>}
+                              <th style={{ padding:'7px 12px', textAlign:'right',  fontSize:10, fontWeight:700, color:'#555', borderBottom:'2px solid #E5E7EB', textTransform:'uppercase', letterSpacing:'.04em' }}>Monto</th>
+                              {showCuotas && <th style={{ padding:'7px 12px', textAlign:'center', fontSize:10, fontWeight:700, color:'#555', borderBottom:'2px solid #E5E7EB', textTransform:'uppercase', letterSpacing:'.04em' }}>Cuota</th>}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((r, i) => (
+                              <tr key={r.id} style={{ background: i % 2 ? bgStripe : '#fff', borderBottom:'1px solid #E8E8E3' }}>
+                                <td style={{ padding:'7px 12px', fontFamily:"'DM Mono',monospace", fontSize:12 }}>{r.nDoc}</td>
+                                <td style={{ padding:'7px 12px', textAlign:'center', fontSize:12, color:'#555' }}>{fechas.viernes}</td>
+                                {showProveedor && (
+                                  <td style={{ padding:'7px 12px', fontSize:12, color:'#444' }}>{r.detalle}</td>
+                                )}
+                                <td style={{ padding:'7px 12px', textAlign:'right', fontWeight:600,
+                                  fontFamily:"'DM Mono',monospace", fontSize:12,
+                                  color: r.monto < 0 ? '#DC2626' : '#1a1a1a' }}>
+                                  {fmtCLP(r.monto)}
+                                </td>
+                                {showCuotas && (
+                                  <td style={{ padding:'7px 12px', textAlign:'center' }}>
+                                    {r.cuotas && (
+                                      <span style={{ background:'#DBEAFE', color:'#1D4ED8',
+                                        fontSize:10, fontWeight:700, padding:'3px 9px', borderRadius:99 }}>
+                                        {r.cuotas}
+                                      </span>
+                                    )}
+                                  </td>
+                                )}
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr style={{ background:'#F8F9FA', borderTop:'2px solid #dee2e6' }}>
+                              <td style={{ padding:'9px 12px', fontWeight:800, fontSize:13, color:'#111' }}>TOTAL</td>
+                              <td />
+                              {showProveedor && <td />}
+                              <td style={{ padding:'9px 12px', textAlign:'right', fontWeight:800,
+                                fontFamily:"'DM Mono',monospace", fontSize:14, color }}>
+                                {fmtCLP(total)}
+                              </td>
+                              {showCuotas && <td />}
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                      {/* Footer */}
+                      <div style={{ background:'#FAFAF7', borderTop:`1px solid ${borderHeader}`, padding:'10px 22px', textAlign:'center' }}>
+                        <span style={{ fontSize:10, color:'#aaa' }}>Sistema Nómina Semanal · Transportes Bello e Hijos Ltda.</span>
+                      </div>
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </>)}
           </div>
         )}
