@@ -87,12 +87,10 @@ export default function App() {
     const copecNums = new Set(Object.keys(copecByDoc));
 
     // Build historico doc count for cuota calc
-    // Only count entries with payment date BEFORE current payment date
     const pagoISO = fmtDateISO(pago);
     const histDocCount = {};
     historico.forEach(h => {
       if(h.AUTORIZADOR === 'LBS' && !COPEC_EXCLUSIONS.has(h.DETALLE)) {
-        // Skip entries from the same or later payment date
         if(h.FECHA_PAGO && h.FECHA_PAGO >= pagoISO) return;
         const key = `${h.N_DOCUMENTO}|||${h.DETALLE}`;
         histDocCount[key] = (histDocCount[key] || 0) + 1;
@@ -101,7 +99,6 @@ export default function App() {
 
     const result = [];
     const localDocCount = {};
-
     dataRows.forEach(row => {
       const venc = parseDate(row[col['Vencimiento']]);
       const fichaName = row[col['Ficha']]?.toString() || '';
@@ -114,7 +111,6 @@ export default function App() {
       const rut = row[col['ID Ficha']]?.toString() || '';
 
       if(!esCopec && venc && venc < lunes) return;
-
       let enSemana = false;
       if(esCopec) {
         if(copecNums.has(numDoc)) enSemana = true;
@@ -151,7 +147,6 @@ export default function App() {
       if(a.esCopec !== b.esCopec) return a.esCopec ? 1 : -1;
       return a.detalle.localeCompare(b.detalle);
     });
-
     setNominaRows(result);
     setProcessing(false);
     setTab("revision");
@@ -164,28 +159,24 @@ export default function App() {
 
   // ─── STATS ─────────────────────────────────────────────────────────
   const stats = useMemo(() => {
-    // Current week breakdown: Combustible vs Proveedores
     const combustibleRows = nominaRows.filter(r => r.isCombustible);
     const proveedorRows = nominaRows.filter(r => !r.isCombustible);
     const combustibleTotal = combustibleRows.reduce((s, r) => s + r.monto, 0);
     const proveedorTotal = proveedorRows.reduce((s, r) => s + r.monto, 0);
     const total = combustibleTotal + proveedorTotal;
-
     const byAuth = {};
     nominaRows.forEach(r => { byAuth[r.autorizador] = (byAuth[r.autorizador] || 0) + r.monto; });
     const topProvs = {};
     proveedorRows.forEach(r => { topProvs[r.detalle] = (topProvs[r.detalle] || 0) + r.monto; });
     const top5 = Object.entries(topProvs).sort((a, b) => b[1] - a[1]).slice(0, 5);
 
-    // Historical comparison - COMBUSTIBLE = only pure COPEC + ESMAX (not lubricantes)
     const COMBUSTIBLE_HIST = new Set(["COPEC S A","COPEC S A (NOTA DE CREDITO)",
       "ESMAX DISTRIBUCION SPA","ESMAX DISTRIBUCION SPA (NOTA DE CREDITO)"]);
-    const pagoISO = fechas.viernes; // current payment date
-
+    const pagoISO = fechas.viernes;
     const weekTotals = {};
     historico.forEach(h => {
       const f = h.FECHA_PAGO;
-      if(!f || f >= pagoISO) return; // Exclude current week and future
+      if(!f || f >= pagoISO) return;
       if(!weekTotals[f]) weekTotals[f] = { total:0, combustible:0, proveedores:0, docs:0 };
       const m = parseMonto(h.MONTO);
       weekTotals[f].total += m;
@@ -194,21 +185,16 @@ export default function App() {
       else weekTotals[f].proveedores += m;
     });
     const sortedWeeks = Object.entries(weekTotals).sort((a,b) => a[0].localeCompare(b[0]));
-
-    // Previous week = last week in historico BEFORE current
     const prevWeek = sortedWeeks.length > 0 ? sortedWeeks[sortedWeeks.length - 1] : null;
     const varTotal = prevWeek && prevWeek[1].total ? ((total / prevWeek[1].total) - 1) * 100 : null;
     const varProveedores = prevWeek && prevWeek[1].proveedores ? ((proveedorTotal / prevWeek[1].proveedores) - 1) * 100 : null;
     const varCombustible = prevWeek && prevWeek[1].combustible ? ((combustibleTotal / prevWeek[1].combustible) - 1) * 100 : null;
-
-    // 4-week moving average (only from weeks before current)
     const last4 = sortedWeeks.slice(-4);
     const avg4Total = last4.length >= 2 ? last4.reduce((s,w) => s + w[1].total, 0) / last4.length : 0;
-    const varVsAvg = avg4Total > 1000 ? ((total / avg4Total) - 1) * 100 : null; // sanity check
+    const varVsAvg = avg4Total > 1000 ? ((total / avg4Total) - 1) * 100 : null;
 
-    // Alerts
     const alerts = [];
-    if(varTotal !== null && Math.abs(varTotal) < 1000) { // sanity: ignore absurd %
+    if(varTotal !== null && Math.abs(varTotal) < 1000) {
       if(varTotal > 15) alerts.push({ type:'warn', text:`Nómina +${varTotal.toFixed(0)}% vs semana anterior` });
       if(varTotal < -15) alerts.push({ type:'good', text:`Nómina ${varTotal.toFixed(0)}% vs semana anterior` });
     }
@@ -218,8 +204,6 @@ export default function App() {
     if(varVsAvg !== null && Math.abs(varVsAvg) < 1000) {
       if(varVsAvg > 15) alerts.push({ type:'warn', text:`+${varVsAvg.toFixed(0)}% sobre promedio mensual` });
     }
-
-    // New providers
     const recentProvs = new Set();
     const recent8dates = new Set(sortedWeeks.slice(-8).map(w => w[0]));
     historico.forEach(h => {
@@ -233,11 +217,51 @@ export default function App() {
              avg4Total, varVsAvg, alerts, sortedWeeks };
   }, [nominaRows, historico, fechas.viernes]);
 
+  // ─── CORREO LBS ────────────────────────────────────────────────────
+  const correoLBS = useMemo(() => {
+    const PETROLEO = new Set(['COPEC S A','COPEC S A (NOTA DE CREDITO)']);
+    const LUBRICANTES = new Set(['COPEC (LUBRICANTES)','COPEC (LUBRICANTES)(NOTA DE CREDITO)']);
+
+    const petroleo    = nominaRows.filter(r => PETROLEO.has(r.detalle));
+    const lubricantes = nominaRows.filter(r => LUBRICANTES.has(r.detalle));
+    const neumaticos  = nominaRows.filter(r =>
+      r.autorizador === 'LBS' && !PETROLEO.has(r.detalle) && !LUBRICANTES.has(r.detalle)
+    );
+
+    const totalPetroleo    = petroleo.reduce((s, r) => s + r.monto, 0);
+    const totalLubricantes = lubricantes.reduce((s, r) => s + r.monto, 0);
+    const totalNeumaticos  = neumaticos.reduce((s, r) => s + r.monto, 0);
+
+    // Comparativo semana anterior desde histórico
+    const PETROLEO_HIST    = new Set(['COPEC S A','COPEC S A (NOTA DE CREDITO)']);
+    const LUBRICANTES_HIST = new Set(['COPEC (LUBRICANTES)','COPEC (LUBRICANTES)(NOTA DE CREDITO)']);
+    const pagoISO = fechas.viernes;
+    const semanas = {};
+    historico.forEach(h => {
+      if(!h.FECHA_PAGO || h.FECHA_PAGO >= pagoISO) return;
+      const f = h.FECHA_PAGO;
+      if(!semanas[f]) semanas[f] = { petroleo:0, lubricantes:0, neumaticos:0 };
+      const m = parseMonto(h.MONTO);
+      if(PETROLEO_HIST.has(h.DETALLE)) semanas[f].petroleo += m;
+      else if(LUBRICANTES_HIST.has(h.DETALLE)) semanas[f].lubricantes += m;
+      else if(h.AUTORIZADOR === 'LBS') semanas[f].neumaticos += m;
+    });
+    const semanasSorted = Object.entries(semanas).sort((a,b) => a[0].localeCompare(b[0]));
+    const prevSemana = semanasSorted.length > 0 ? semanasSorted[semanasSorted.length - 1][1] : null;
+
+    const varP = prevSemana?.petroleo    > 0 ? ((totalPetroleo    / prevSemana.petroleo)    - 1) * 100 : null;
+    const varL = prevSemana?.lubricantes > 0 ? ((totalLubricantes / prevSemana.lubricantes) - 1) * 100 : null;
+    const varN = prevSemana?.neumaticos  > 0 ? ((totalNeumaticos  / prevSemana.neumaticos)  - 1) * 100 : null;
+
+    return { petroleo, lubricantes, neumaticos,
+             totalPetroleo, totalLubricantes, totalNeumaticos,
+             prevSemana, varP, varL, varN };
+  }, [nominaRows, historico, fechas.viernes]);
+
   // ─── SEARCH ────────────────────────────────────────────────────────
   const doSearch = useCallback(() => {
     if(!searchQuery.trim()) { setSearchResults([]); return; }
     const q = searchQuery.trim().toLowerCase();
-    // Search across all text fields, also try numeric match for doc numbers
     const results = historico.filter(r => {
       const doc = (r.N_DOCUMENTO || '').toString().trim();
       const rut = (r.RUT || '').toString().trim().toLowerCase();
@@ -297,14 +321,16 @@ export default function App() {
   };
 
   const tabs = [
-    { id:"carga", label:"① Carga", icon:"📁" },
-    { id:"revision", label:"② Revisión", icon:"✏️" },
-    { id:"confirmar", label:"③ Confirmar", icon:"✅" },
-    { id:"buscar", label:"④ Histórico", icon:"🔍" },
+    { id:"carga",    label:"① Carga",      icon:"📁" },
+    { id:"revision", label:"② Revisión",   icon:"✏️" },
+    { id:"confirmar",label:"③ Confirmar",  icon:"✅" },
+    { id:"buscar",   label:"④ Histórico",  icon:"🔍" },
+    { id:"correo",   label:"⑤ Correo LBS", icon:"✉️" },
   ];
 
   return (
     <div style={{ minHeight:'100vh', background:'var(--bg)', fontFamily:'var(--sans)' }}>
+
       {/* HEADER */}
       <header style={S.header} className="no-print">
         <div style={S.headerInner}>
@@ -360,14 +386,12 @@ export default function App() {
                 </div>
               </div>
             </div>
-
             <div style={S.grid(2)}>
               <DropZone label="Archivo Defontana" icon="📄" hint="Excel del sistema contable"
                 fileName={fileNames.nomina} onFile={f => handleFile(f, 'nomina')}/>
               <DropZone label="Archivo COPEC" icon="⛽" hint="Facturas COPEC de la semana"
                 fileName={fileNames.copec} onFile={f => handleFile(f, 'copec')}/>
             </div>
-
             <div style={{ marginTop:12 }}>
               <button onClick={processNomina} disabled={!dataNomina || !dataCopec || processing}
                 style={{ ...S.btn(dataNomina && dataCopec && !processing ? '#1D9E75' : '#bbb'),
@@ -393,7 +417,6 @@ export default function App() {
                 <Stat label="COPEC" value={fmtCLP(stats.combustibleTotal)} sub={`${stats.combustibleRows.length} docs`}/>
                 <Stat label="TOTAL GENERAL" value={fmtCLP(stats.total)} highlight/>
               </div>
-
               {nominaRows.some(r => r.isNC) && (
                 <div style={{ background:'#FFFBEB', border:'1px solid #FDE68A', borderRadius:12, padding:'12px 16px',
                   display:'flex', alignItems:'center', gap:12, marginBottom:12, marginTop:4 }}>
@@ -403,7 +426,6 @@ export default function App() {
                   </p>
                 </div>
               )}
-
               <div style={{ ...S.card, padding:0, overflow:'hidden' }}>
                 <div style={{ overflowX:'auto', maxHeight:'58vh', overflowY:'auto' }}>
                   <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
@@ -454,7 +476,6 @@ export default function App() {
                   </table>
                 </div>
               </div>
-
               <button onClick={() => setTab("confirmar")}
                 style={{ ...S.btn('#1D9E75'), boxShadow:'0 4px 16px rgba(29,158,117,.3)', marginTop:4 }}>
                 Confirmar nómina →
@@ -473,8 +494,6 @@ export default function App() {
             ) : (<>
               <div style={S.card}>
                 <div style={S.sectionTitle}>Resumen nómina — Pago {fmtDate(parseDateInput(fechas.viernes))}</div>
-
-                {/* Alerts */}
                 {stats.alerts.length > 0 && (
                   <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:16 }}>
                     {stats.alerts.map((a, i) => (
@@ -487,8 +506,6 @@ export default function App() {
                     ))}
                   </div>
                 )}
-
-                {/* Main totals with variation */}
                 <div style={S.grid(3)}>
                   <div style={{ background:'#E8F5EF', borderRadius:12, padding:16, border:'1px solid #C5E8D5' }}>
                     <p style={{ fontSize:11, color:'#0D3B2E', fontWeight:600 }}>Total General</p>
@@ -533,8 +550,6 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-
-                {/* Context: avg 4 weeks */}
                 {stats.avg4Total > 0 && (
                   <div style={{ marginTop:16, background:'#F9FAFB', borderRadius:10, padding:'12px 16px', border:'1px solid #E5E7EB' }}>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
@@ -552,8 +567,6 @@ export default function App() {
                     </div>
                   </div>
                 )}
-
-                {/* Top 5 proveedores */}
                 <div style={{ ...S.sectionTitle, marginTop:20 }}>Principales proveedores de la semana</div>
                 <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
                   {stats.top5.map(([prov, total], i) => {
@@ -579,12 +592,202 @@ export default function App() {
                   })}
                 </div>
               </div>
-
               <div style={S.grid(3, 10)}>
                 <button onClick={copyForSheets} style={S.btn('#2563EB')}>📋 Copiar para Sheets</button>
                 <button onClick={downloadExcel} style={S.btn('#fff', '#14614B', '2px solid #1D9E75')}>⬇ Descargar Excel</button>
                 <button onClick={() => window.print()} style={S.btn('#0D3B2E')}>🖨 Imprimir nómina</button>
               </div>
+            </>)}
+          </div>
+        )}
+
+        {/* ═══ TAB 5: CORREO LBS ═══ */}
+        {tab === "correo" && (
+          <div className="fade-in">
+            {nominaRows.length === 0 ? (
+              <div style={{ ...S.card, textAlign:'center', padding:48, color:'#aaa' }}>
+                <p style={{ fontSize:16, marginBottom:8 }}>Sin datos</p>
+                <p style={{ fontSize:13 }}>Primero procesa los archivos en la pestaña Carga.</p>
+              </div>
+            ) : (<>
+              {/* Cuadro comparativo */}
+              <div style={{ ...S.card, marginBottom:16 }}>
+                <div style={S.sectionTitle}>Comparativo vs semana anterior — Pago {fechas.viernes}</div>
+                <div style={S.grid(3, 10)}>
+                  {[
+                    { label:'Petróleo',    total: correoLBS.totalPetroleo,    prev: correoLBS.prevSemana?.petroleo,    vari: correoLBS.varP, color:'#0D3B2E', bg:'#E8F5EF', border:'#C5E8D5' },
+                    { label:'Lubricantes', total: correoLBS.totalLubricantes, prev: correoLBS.prevSemana?.lubricantes, vari: correoLBS.varL, color:'#14614B', bg:'#F0FDF4', border:'#BBF7D0' },
+                    { label:'Neumáticos',  total: correoLBS.totalNeumaticos,  prev: correoLBS.prevSemana?.neumaticos,  vari: correoLBS.varN, color:'#1D4ED8', bg:'#EFF6FF', border:'#BFDBFE' },
+                  ].map(({ label, total, prev, vari, color, bg, border }) => (
+                    <div key={label} style={{ background:bg, borderRadius:10, padding:14, border:`1px solid ${border}` }}>
+                      <p style={{ fontSize:11, fontWeight:700, color, textTransform:'uppercase', letterSpacing:'.04em' }}>{label}</p>
+                      <p style={{ fontSize:20, fontWeight:800, color:'#1a1a1a', marginTop:4, fontFamily:"'DM Mono',monospace" }}>{fmtCLP(total)}</p>
+                      {prev != null && prev > 0 ? (
+                        <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6, flexWrap:'wrap' }}>
+                          <span style={{ fontSize:10, color:'#888' }}>Ant: {fmtCLP(prev)}</span>
+                          {vari !== null && (
+                            <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4,
+                              background: vari > 0 ? '#FEF3C7' : '#D1FAE5',
+                              color: vari > 0 ? '#92400E' : '#065F46' }}>
+                              {vari > 0 ? '▲' : '▼'} {Math.abs(vari).toFixed(1)}%
+                            </span>
+                          )}
+                        </div>
+                      ) : <p style={{ fontSize:10, color:'#ccc', marginTop:4 }}>Sin semana anterior</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Bloques de correo */}
+              {[
+                {
+                  key: 'petroleo',
+                  titulo: 'PETRÓLEO',
+                  subtitulo: 'COPEC',
+                  color: '#0D3B2E',
+                  bgHeader: '#E8F5EF',
+                  borderHeader: '#C5E8D5',
+                  rows: correoLBS.petroleo,
+                  total: correoLBS.totalPetroleo,
+                  showCuotas: false,
+                },
+                {
+                  key: 'lubricantes',
+                  titulo: 'LUBRICANTES',
+                  subtitulo: 'COPEC (LUBRICANTES)',
+                  color: '#14614B',
+                  bgHeader: '#F0FDF4',
+                  borderHeader: '#BBF7D0',
+                  rows: correoLBS.lubricantes,
+                  total: correoLBS.totalLubricantes,
+                  showCuotas: false,
+                },
+                {
+                  key: 'neumaticos',
+                  titulo: 'NEUMÁTICOS',
+                  subtitulo: 'Neumáticos',
+                  color: '#1D4ED8',
+                  bgHeader: '#EFF6FF',
+                  borderHeader: '#BFDBFE',
+                  rows: correoLBS.neumaticos,
+                  total: correoLBS.totalNeumaticos,
+                  showCuotas: true,
+                },
+              ].map(({ key, titulo, subtitulo, color, bgHeader, borderHeader, rows, total, showCuotas }) => (
+                <div key={key} style={{ ...S.card, marginBottom:16 }}>
+                  {/* Encabezado del bloque */}
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+                    <div style={{ background:bgHeader, border:`1px solid ${borderHeader}`, borderRadius:8,
+                      padding:'6px 16px', display:'inline-flex', alignItems:'center', gap:10 }}>
+                      <span style={{ fontSize:14, fontWeight:800, color, letterSpacing:'.05em' }}>{titulo}</span>
+                      <span style={{ fontSize:11, color, opacity:.65 }}>
+                        {rows.length} doc{rows.length !== 1 ? 's' : ''} · {fmtCLP(total)}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        // Copia en texto plano con tabuladores (formato tabla para pegar en correo/Excel)
+                        const encabezado = showCuotas
+                          ? ['Nº Documento', 'Fecha pago', 'Monto', 'Cuota'].join('\t')
+                          : ['Nº Documento', 'Fecha pago', 'Monto'].join('\t');
+                        const filas = rows.map(r => showCuotas
+                          ? [r.nDoc, fechas.viernes, r.monto.toLocaleString('de-DE'), r.cuotas || ''].join('\t')
+                          : [r.nDoc, fechas.viernes, r.monto.toLocaleString('de-DE')].join('\t')
+                        );
+                        const totalFila = showCuotas
+                          ? ['TOTAL', '', total.toLocaleString('de-DE'), ''].join('\t')
+                          : ['TOTAL', '', total.toLocaleString('de-DE')].join('\t');
+                        const texto = [
+                          `Estimado Luis,`,
+                          ``,
+                          `Favor revisar y dar Vº Bº para pago.`,
+                          ``,
+                          `${subtitulo}`,
+                          encabezado,
+                          ...filas,
+                          totalFila,
+                        ].join('\n');
+                        navigator.clipboard.writeText(texto).then(() =>
+                          showToast(`✓ Correo ${titulo} copiado al portapapeles`)
+                        );
+                      }}
+                      style={{ padding:'8px 20px', borderRadius:8, background:'#1D9E75', color:'#fff',
+                        fontWeight:700, fontSize:12, border:'none', cursor:'pointer',
+                        display:'flex', alignItems:'center', gap:6, boxShadow:'0 2px 8px rgba(29,158,117,.25)' }}>
+                      📋 Copiar correo
+                    </button>
+                  </div>
+
+                  {rows.length === 0 ? (
+                    <div style={{ background:'#FAFAF7', borderRadius:8, padding:24, textAlign:'center', color:'#bbb', fontSize:12 }}>
+                      No hay documentos en esta categoría para la semana procesada.
+                    </div>
+                  ) : (
+                    /* Vista previa del correo */
+                    <div style={{ background:'#FAFAF7', borderRadius:8, border:'1px solid #E0E0D8', padding:20 }}>
+                      <p style={{ fontSize:12, color:'#555', marginBottom:6 }}>Estimado Luis,</p>
+                      <p style={{ fontSize:12, color:'#333', fontWeight:600, marginBottom:16 }}>
+                        Favor revisar y dar Vº Bº para pago.
+                      </p>
+                      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                        <thead>
+                          <tr>
+                            <th colSpan={showCuotas ? 4 : 3}
+                              style={{ background:color, color:'#fff', padding:'7px 12px',
+                                textAlign:'center', fontWeight:800, letterSpacing:'.05em',
+                                fontSize:12, borderRadius:'6px 6px 0 0' }}>
+                              {subtitulo}
+                            </th>
+                          </tr>
+                          <tr style={{ background:'#EFEFEA' }}>
+                            <th style={{ padding:'5px 10px', textAlign:'left',   fontSize:10, fontWeight:700, color:'#555', borderBottom:'1px solid #ddd' }}>Nº Documento</th>
+                            <th style={{ padding:'5px 10px', textAlign:'center', fontSize:10, fontWeight:700, color:'#555', borderBottom:'1px solid #ddd' }}>Fecha pago</th>
+                            <th style={{ padding:'5px 10px', textAlign:'right',  fontSize:10, fontWeight:700, color:'#555', borderBottom:'1px solid #ddd' }}>Monto</th>
+                            {showCuotas && <th style={{ padding:'5px 10px', textAlign:'center', fontSize:10, fontWeight:700, color:'#555', borderBottom:'1px solid #ddd' }}>Cuota</th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((r, i) => (
+                            <tr key={r.id} style={{ background: i % 2 ? '#F5F5F0' : '#fff', borderBottom:'1px solid #EFEFEA' }}>
+                              <td style={{ padding:'5px 10px', fontFamily:"'DM Mono',monospace", fontSize:11 }}>{r.nDoc}</td>
+                              <td style={{ padding:'5px 10px', textAlign:'center', fontSize:11 }}>{fechas.viernes}</td>
+                              <td style={{ padding:'5px 10px', textAlign:'right', fontWeight:600,
+                                fontFamily:"'DM Mono',monospace", fontSize:11,
+                                color: r.monto < 0 ? '#DC2626' : '#1a1a1a' }}>
+                                {fmtCLP(r.monto)}
+                              </td>
+                              {showCuotas && (
+                                <td style={{ padding:'5px 10px', textAlign:'center' }}>
+                                  {r.cuotas && (
+                                    <span style={{ background:'#DBEAFE', color:'#1D4ED8',
+                                      fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:99 }}>
+                                      {r.cuotas}
+                                    </span>
+                                  )}
+                                </td>
+                              )}
+                            </tr>
+                          ))}
+                          {/* Fila de total */}
+                          <tr style={{ background:'#F0F0EA', borderTop:'2px solid #ccc' }}>
+                            <td colSpan={showCuotas ? 2 : 2}
+                              style={{ padding:'7px 10px', fontWeight:800, fontSize:12, color:'#333' }}>
+                              TOTAL
+                            </td>
+                            <td style={{ padding:'7px 10px', textAlign:'right', fontWeight:800,
+                              fontFamily:"'DM Mono',monospace", fontSize:13,
+                              color: total < 0 ? '#DC2626' : color }}>
+                              {fmtCLP(total)}
+                            </td>
+                            {showCuotas && <td />}
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ))}
             </>)}
           </div>
         )}
@@ -609,7 +812,6 @@ export default function App() {
                 </p>
               )}
             </div>
-
             {searchResults.length > 0 && (
               <div style={{ ...S.card, padding:0, overflow:'hidden' }}>
                 <div style={{ padding:'10px 16px', background:'#FAFAF7', borderBottom:'1px solid #E0E0D8' }}>
@@ -647,7 +849,6 @@ export default function App() {
                 </div>
               </div>
             )}
-
             {searchQuery && searchResults.length === 0 && !loadingSheets && (
               <div style={{ ...S.card, textAlign:'center', padding:48, color:'#aaa' }}>
                 Sin resultados para "{searchQuery}"
@@ -655,12 +856,12 @@ export default function App() {
             )}
           </div>
         )}
+
       </main>
 
       {/* ═══ PRINT VIEW — PORTRAIT ═══ */}
       {nominaRows.length > 0 && (
         <div className="print-only" style={{ padding:'0 2mm' }}>
-          {/* Print Header */}
           <div style={{ borderBottom:'3px solid #0D3B2E', paddingBottom:10, marginBottom:12 }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end' }}>
               <div>
@@ -679,8 +880,6 @@ export default function App() {
               </div>
             </div>
           </div>
-
-          {/* Print Summary - 2x2 grid */}
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6, marginBottom:10 }}>
             <div style={{ background:'#E8F5EF', borderRadius:5, padding:'8px 10px', border:'1px solid #C5E8D5' }}>
               <p style={{ fontSize:8, color:'#0D3B2E', fontWeight:700, margin:0, textTransform:'uppercase', letterSpacing:'.04em' }}>Total General</p>
@@ -713,8 +912,6 @@ export default function App() {
               </div>
             )}
           </div>
-
-          {/* Print Top 5 */}
           <div style={{ marginBottom:10, padding:'5px 0', borderTop:'1px solid #E0E0D8', borderBottom:'1px solid #E0E0D8' }}>
             <div style={{ display:'flex', alignItems:'center', gap:4, flexWrap:'wrap' }}>
               <span style={{ fontSize:7.5, color:'#888', fontWeight:700 }}>PRINCIPALES PROVEEDORES:</span>
@@ -727,8 +924,6 @@ export default function App() {
               ))}
             </div>
           </div>
-
-          {/* Print Table */}
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ background:'#0D3B2E' }}>
@@ -752,8 +947,6 @@ export default function App() {
               ))}
             </tbody>
           </table>
-
-          {/* Print Footer with signature */}
           <div style={{ marginTop:30, paddingTop:10 }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end' }}>
               <p style={{ fontSize:7.5, color:'#aaa', margin:0 }}>
