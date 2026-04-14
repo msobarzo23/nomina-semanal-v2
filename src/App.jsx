@@ -159,8 +159,15 @@ export default function App() {
 
   // ─── STATS ─────────────────────────────────────────────────────────
   const stats = useMemo(() => {
-    const combustibleRows = nominaRows.filter(r => r.isCombustible);
-    const proveedorRows = nominaRows.filter(r => !r.isCombustible);
+    // isCombustible se recalcula sobre el detalle ACTUAL (puede haber sido editado)
+    // Combustible = COPEC S A puro (petróleo) + ESMAX — excluye lubricantes
+    const esCombustibleActual = (r) => {
+      const d = r.detalle.toUpperCase();
+      if(d.includes('LUBRICANTES')) return false;
+      return d.includes('COPEC S A') || d.includes('ESMAX DISTRIBUCION SPA');
+    };
+    const combustibleRows = nominaRows.filter(r => esCombustibleActual(r));
+    const proveedorRows = nominaRows.filter(r => !esCombustibleActual(r));
     const combustibleTotal = combustibleRows.reduce((s, r) => s + r.monto, 0);
     const proveedorTotal = proveedorRows.reduce((s, r) => s + r.monto, 0);
     const total = combustibleTotal + proveedorTotal;
@@ -170,8 +177,6 @@ export default function App() {
     proveedorRows.forEach(r => { topProvs[r.detalle] = (topProvs[r.detalle] || 0) + r.monto; });
     const top5 = Object.entries(topProvs).sort((a, b) => b[1] - a[1]).slice(0, 5);
 
-    const COMBUSTIBLE_HIST = new Set(["COPEC S A","COPEC S A (NOTA DE CREDITO)",
-      "ESMAX DISTRIBUCION SPA","ESMAX DISTRIBUCION SPA (NOTA DE CREDITO)"]);
     const pagoISO = fechas.viernes;
     const weekTotals = {};
     historico.forEach(h => {
@@ -179,9 +184,12 @@ export default function App() {
       if(!f || f >= pagoISO) return;
       if(!weekTotals[f]) weekTotals[f] = { total:0, combustible:0, proveedores:0, docs:0 };
       const m = parseMonto(h.MONTO);
+      const det = (h.DETALLE || '').toUpperCase();
+      // Combustible histórico: COPEC S A sin lubricantes + ESMAX
+      const esCombHist = (det.includes('COPEC S A') && !det.includes('LUBRICANTES')) || det.includes('ESMAX DISTRIBUCION SPA');
       weekTotals[f].total += m;
       weekTotals[f].docs += 1;
-      if(COMBUSTIBLE_HIST.has(h.DETALLE)) weekTotals[f].combustible += m;
+      if(esCombHist) weekTotals[f].combustible += m;
       else weekTotals[f].proveedores += m;
     });
     const sortedWeeks = Object.entries(weekTotals).sort((a,b) => a[0].localeCompare(b[0]));
@@ -207,7 +215,9 @@ export default function App() {
     const recentProvs = new Set();
     const recent8dates = new Set(sortedWeeks.slice(-8).map(w => w[0]));
     historico.forEach(h => {
-      if(recent8dates.has(h.FECHA_PAGO) && !COMBUSTIBLE_HIST.has(h.DETALLE)) recentProvs.add(h.DETALLE);
+      const det = (h.DETALLE || '').toUpperCase();
+      const esCombHist2 = (det.includes('COPEC S A') && !det.includes('LUBRICANTES')) || det.includes('ESMAX DISTRIBUCION SPA');
+      if(recent8dates.has(h.FECHA_PAGO) && !esCombHist2) recentProvs.add(h.DETALLE);
     });
     const newProvs = [...new Set(proveedorRows.filter(r => !recentProvs.has(r.detalle)).map(r => r.detalle))];
     if(newProvs.length > 0) alerts.push({ type:'info', text:`${newProvs.length} proveedor(es) nuevo(s): ${newProvs.slice(0,3).join(', ')}${newProvs.length>3?'…':''}` });
@@ -218,14 +228,18 @@ export default function App() {
   }, [nominaRows, historico, fechas.viernes]);
 
   // ─── CORREO LBS ────────────────────────────────────────────────────
-  const correoLBS = useMemo(() => {
-    const PETROLEO = new Set(['COPEC S A','COPEC S A (NOTA DE CREDITO)']);
-    const LUBRICANTES = new Set(['COPEC (LUBRICANTES)','COPEC (LUBRICANTES)(NOTA DE CREDITO)']);
+  // Clasifica usando el detalle EDITADO por el usuario (post-revisión)
+  // Petróleo  : detalle contiene "COPEC S A" pero NO "(LUBRICANTES)"
+  // Lubricantes: detalle contiene "(LUBRICANTES)"  (con o sin "NOTA DE CREDITO")
+  // Neumáticos : autorizador LBS y no es Petróleo ni Lubricantes
+  const esPetroleo    = (detalle) => detalle.toUpperCase().includes('COPEC S A') && !detalle.toUpperCase().includes('LUBRICANTES');
+  const esLubricante  = (detalle) => detalle.toUpperCase().includes('LUBRICANTES');
 
-    const petroleo    = nominaRows.filter(r => PETROLEO.has(r.detalle));
-    const lubricantes = nominaRows.filter(r => LUBRICANTES.has(r.detalle));
+  const correoLBS = useMemo(() => {
+    const petroleo    = nominaRows.filter(r => esPetroleo(r.detalle));
+    const lubricantes = nominaRows.filter(r => esLubricante(r.detalle));
     const neumaticos  = nominaRows.filter(r =>
-      r.autorizador === 'LBS' && !PETROLEO.has(r.detalle) && !LUBRICANTES.has(r.detalle)
+      r.autorizador === 'LBS' && !esPetroleo(r.detalle) && !esLubricante(r.detalle)
     );
 
     const totalPetroleo    = petroleo.reduce((s, r) => s + r.monto, 0);
@@ -233,8 +247,7 @@ export default function App() {
     const totalNeumaticos  = neumaticos.reduce((s, r) => s + r.monto, 0);
 
     // Comparativo semana anterior desde histórico
-    const PETROLEO_HIST    = new Set(['COPEC S A','COPEC S A (NOTA DE CREDITO)']);
-    const LUBRICANTES_HIST = new Set(['COPEC (LUBRICANTES)','COPEC (LUBRICANTES)(NOTA DE CREDITO)']);
+    // En el histórico los lubricantes se guardan como "COPEC S A (LUBRICANTES)" (nombre editado)
     const pagoISO = fechas.viernes;
     const semanas = {};
     historico.forEach(h => {
@@ -242,8 +255,9 @@ export default function App() {
       const f = h.FECHA_PAGO;
       if(!semanas[f]) semanas[f] = { petroleo:0, lubricantes:0, neumaticos:0 };
       const m = parseMonto(h.MONTO);
-      if(PETROLEO_HIST.has(h.DETALLE)) semanas[f].petroleo += m;
-      else if(LUBRICANTES_HIST.has(h.DETALLE)) semanas[f].lubricantes += m;
+      const det = (h.DETALLE || '').toUpperCase();
+      if(det.includes('LUBRICANTES')) semanas[f].lubricantes += m;
+      else if(det.includes('COPEC S A')) semanas[f].petroleo += m;
       else if(h.AUTORIZADOR === 'LBS') semanas[f].neumaticos += m;
     });
     const semanasSorted = Object.entries(semanas).sort((a,b) => a[0].localeCompare(b[0]));
@@ -655,7 +669,7 @@ export default function App() {
                 {
                   key: 'lubricantes',
                   titulo: 'LUBRICANTES',
-                  subtitulo: 'COPEC (LUBRICANTES)',
+                  subtitulo: 'COPEC S A (LUBRICANTES)',
                   color: '#14614B',
                   bgHeader: '#F0FDF4',
                   borderHeader: '#BBF7D0',
