@@ -4,7 +4,7 @@ export const AUTORIZADORES_URL = `${SHEET_PUB_BASE}?gid=1684740922&single=true&o
 
 // ⚠️ Pega aquí la URL del despliegue del Apps Script (termina en /exec)
 // Instrucciones en README_SETUP.md
-export const APPS_SCRIPT_URL = "PEGA_AQUI_LA_URL_DEL_WEBAPP_APPS_SCRIPT";
+export const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx_Io6w5no_zdddc5q_uVYmzF7NGaMs-l8p0Sn_NaEl5KUSoXaCACaU-6LwCHlN-nsxEg/exec";
 
 export const COPEC_EXCLUSIONS = new Set([
   "COPEC S A","COPEC S A (LUBRICANTES)","COPEC S A (LUBRICANTES)(NOTA DE CREDITO)",
