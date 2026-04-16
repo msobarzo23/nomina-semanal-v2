@@ -19,7 +19,6 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [processing, setProcessing] = useState(false);
   // Nuevos estados para persistencia
-  const [aprobador, setAprobador] = useState("MBL");
   const [nominasGuardadas, setNominasGuardadas] = useState([]);
   const [loadedFromSheet, setLoadedFromSheet] = useState(null); // fecha si viene cargada del sheet
   const [saving, setSaving] = useState(false);
@@ -80,7 +79,6 @@ export default function App() {
         domingo: enc.DOMINGO || '',
         viernes: enc.FECHA_PAGO || fecha,
       });
-      if(enc.APROBADOR) setAprobador(enc.APROBADOR);
       const rows = (j.detalle || []).map((d, i) => ({
         id: `loaded-${i}`,
         fecha: d.FECHA_PAGO,
@@ -112,7 +110,6 @@ export default function App() {
       return;
     }
     if(nominaRows.length === 0) { showToast("Sin datos para guardar"); return; }
-    if(!aprobador) { showToast("Selecciona un aprobador en el header"); return; }
 
     // Calcular totales (reusa la lógica del memo, pero recalculo directo para no depender del render)
     const esCombustibleActual = (r) => {
@@ -135,7 +132,7 @@ export default function App() {
         TOTAL_PROVEEDORES: totalProv,
         TOTAL_COPEC: totalComb,
         TOTAL_DOCS: nominaRows.length,
-        APROBADOR: aprobador,
+        APROBADOR: '',
         TIMESTAMP: new Date().toISOString(),
       },
       detalle: nominaRows.map(r => ({
@@ -173,7 +170,7 @@ export default function App() {
       showToast("❌ Error guardando nómina");
     }
     setSaving(false);
-  }, [nominaRows, fechas, aprobador, fetchNominasGuardadas]);
+  }, [nominaRows, fechas, fetchNominasGuardadas]);
 
   // ─── FILE READING ──────────────────────────────────────────────────
   const handleFile = (file, key) => {
@@ -506,16 +503,6 @@ export default function App() {
             <p style={{ fontSize:12, opacity:.7, marginTop:2 }}>Transportes Bello e Hijos Ltda.</p>
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-            {/* Aprobador */}
-            <div style={{ background:'rgba(255,255,255,.12)', borderRadius:8, padding:'6px 10px',
-              display:'flex', alignItems:'center', gap:8, border:'1px solid rgba(255,255,255,.2)' }}>
-              <span style={{ fontSize:10, opacity:.7, textTransform:'uppercase', letterSpacing:'.05em', fontWeight:600 }}>Aprobador</span>
-              <select value={aprobador} onChange={e => setAprobador(e.target.value)}
-                style={{ background:'rgba(255,255,255,.15)', border:'1px solid rgba(255,255,255,.3)',
-                  color:'#fff', padding:'3px 8px', borderRadius:6, fontSize:12, fontWeight:700, cursor:'pointer', outline:'none' }}>
-                {AUTH_LIST.map(a => <option key={a} value={a} style={{ color:'#000' }}>{a}</option>)}
-              </select>
-            </div>
             <div style={{ textAlign:'right' }}>
               {loadingSheets
                 ? <span className="pulse" style={{ fontSize:11, opacity:.6 }}>Cargando…</span>
@@ -801,7 +788,7 @@ export default function App() {
                 <button onClick={saveNominaToSheet} disabled={saving}
                   style={{ ...S.btn(saving ? '#bbb' : '#0D3B2E'),
                     boxShadow: saving ? 'none' : '0 4px 16px rgba(13,59,46,.3)' }}>
-                  {saving ? 'Guardando…' : `💾 Guardar en Sheet (${aprobador})`}
+                  {saving ? 'Guardando…' : '💾 Guardar en Sheet'}
                 </button>
                 <button onClick={() => window.print()} style={S.btn('#1D9E75')}>
                   🖨 Imprimir nómina
@@ -853,7 +840,7 @@ export default function App() {
                   <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
                     <thead style={{ position:'sticky', top:0, background:'#fff', zIndex:1 }}>
                       <tr style={{ borderBottom:'2px solid #E0E0D8' }}>
-                        {['FECHA DE PAGO','SEMANA','TOTAL','DOCS','APROBADOR','GUARDADA',''].map((h, i) => (
+                        {['FECHA DE PAGO','SEMANA','TOTAL','DOCS','GUARDADA',''].map((h, i) => (
                           <th key={i} style={{ padding:'10px', textAlign: i===2?'right':'left',
                             fontSize:10, fontWeight:700, color:'#666', textTransform:'uppercase', letterSpacing:'.04em' }}>{h}</th>
                         ))}
@@ -871,12 +858,8 @@ export default function App() {
                             {fmtCLP(parseFloat(n.TOTAL) || 0)}
                           </td>
                           <td style={{ padding:'10px', ...S.mono, color:'#666' }}>{n.TOTAL_DOCS}</td>
-                          <td style={{ padding:'10px' }}>
-                            <span style={{ background:'#E8F5EF', color:'#0D3B2E', padding:'3px 10px',
-                              borderRadius:99, fontSize:11, fontWeight:700 }}>{n.APROBADOR}</span>
-                          </td>
                           <td style={{ padding:'10px', fontSize:10, color:'#999' }}>
-                            {n.TIMESTAMP ? String(n.TIMESTAMP).slice(0,10) : ''}
+                            {n.TIMESTAMP ? String(n.TIMESTAMP).replace('T',' ').slice(0,16) : ''}
                           </td>
                           <td style={{ padding:'10px' }}>
                             <button onClick={() => loadNominaFromSheet(n.FECHA_PAGO)}
@@ -1365,7 +1348,7 @@ export default function App() {
                   NÓMINA SEMANAL
                 </h1>
                 <p style={{ fontSize:10, color:'#555', margin:'3px 0 0' }}>
-                  Transportes Bello e Hijos Ltda. · RUT 88.397.100-0 · Aprobador: <strong>{aprobador}</strong>
+                  Transportes Bello e Hijos Ltda. · RUT 88.397.100-0
                 </p>
               </div>
               <div style={{ textAlign:'right' }}>
@@ -1448,7 +1431,7 @@ export default function App() {
           <div style={{ marginTop:30, paddingTop:10 }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end' }}>
               <p style={{ fontSize:7.5, color:'#aaa', margin:0 }}>
-                Generado: {new Date().toLocaleDateString('es-CL')} · Aprobador: {aprobador} · Transportes Bello e Hijos Ltda.
+                Generado: {new Date().toLocaleDateString('es-CL')} · Transportes Bello e Hijos Ltda.
               </p>
               <div style={{ textAlign:'center' }}>
                 <div style={{ borderBottom:'1px solid #444', width:220, height:30 }}></div>
