@@ -1,6 +1,10 @@
-export const SHEET_PUB_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRYaLUUzbcUuTXUq86CxBXRR7GLUExRckzBSvV2SEycvV5C3Vsv5UVwugZk9_AH6Q/pub";
+export const SHEET_PUB_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT1ILHR8Hehw4FiGRKgTm__paCyusHvn5LcHlOeFtZAxENpO8GKr2MzV6s1iX7R8e1KbTJqYOCWIMTU/pub";
 export const HISTORICO_URL = `${SHEET_PUB_BASE}?gid=1453444709&single=true&output=csv`;
 export const AUTORIZADORES_URL = `${SHEET_PUB_BASE}?gid=1684740922&single=true&output=csv`;
+
+// ⚠️ Pega aquí la URL del despliegue del Apps Script (termina en /exec)
+// Instrucciones en README_SETUP.md
+export const APPS_SCRIPT_URL = "PEGA_AQUI_LA_URL_DEL_WEBAPP_APPS_SCRIPT";
 
 export const COPEC_EXCLUSIONS = new Set([
   "COPEC S A","COPEC S A (LUBRICANTES)","COPEC S A (LUBRICANTES)(NOTA DE CREDITO)",
