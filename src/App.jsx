@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
-import { HISTORICO_URL, AUTORIZADORES_URL, COPEC_EXCLUSIONS, CUOTA_RULES, AUTH_LIST } from './config.js';
+import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, CUOTA_RULES, AUTH_LIST } from './config.js';
 import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates, parseMonto } from './utils.js';
 
 export default function App() {
@@ -18,6 +18,12 @@ export default function App() {
   const [searchResults, setSearchResults] = useState([]);
   const [toast, setToast] = useState("");
   const [processing, setProcessing] = useState(false);
+  // Nuevos estados para persistencia
+  const [aprobador, setAprobador] = useState("MBL");
+  const [nominasGuardadas, setNominasGuardadas] = useState([]);
+  const [loadedFromSheet, setLoadedFromSheet] = useState(null); // fecha si viene cargada del sheet
+  const [saving, setSaving] = useState(false);
+  const [loadingNomina, setLoadingNomina] = useState(false);
 
   // ─── LOAD GOOGLE SHEETS ON MOUNT ───────────────────────────────────
   useEffect(() => {
@@ -40,8 +46,134 @@ export default function App() {
         setAuthMap(map);
       } catch(e) { console.error("Error cargando Google Sheets:", e); }
       setLoadingSheets(false);
+      // Cargar listado de nóminas guardadas (en paralelo, no bloquea)
+      fetchNominasGuardadas();
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ─── APPS SCRIPT: LIST ─────────────────────────────────────────────
+  const fetchNominasGuardadas = useCallback(async () => {
+    if(!APPS_SCRIPT_URL || APPS_SCRIPT_URL.startsWith('PEGA_')) return;
+    try {
+      const r = await fetch(`${APPS_SCRIPT_URL}?action=list`);
+      const j = await r.json();
+      if(j.ok) setNominasGuardadas(j.nominas || []);
+    } catch(e) { console.error("Error listando nóminas:", e); }
+  }, []);
+
+  // ─── APPS SCRIPT: LOAD ─────────────────────────────────────────────
+  const loadNominaFromSheet = useCallback(async (fecha) => {
+    if(!APPS_SCRIPT_URL || APPS_SCRIPT_URL.startsWith('PEGA_')) {
+      showToast("⚠️ Apps Script no configurado — ver README_SETUP.md");
+      return;
+    }
+    setLoadingNomina(true);
+    try {
+      const r = await fetch(`${APPS_SCRIPT_URL}?action=load&fecha=${encodeURIComponent(fecha)}`);
+      const j = await r.json();
+      if(!j.ok) { showToast(`❌ ${j.error || 'No se pudo cargar'}`); setLoadingNomina(false); return; }
+      // Reconstruir estado
+      const enc = j.encabezado;
+      setFechas({
+        lunes: enc.LUNES || '',
+        domingo: enc.DOMINGO || '',
+        viernes: enc.FECHA_PAGO || fecha,
+      });
+      if(enc.APROBADOR) setAprobador(enc.APROBADOR);
+      const rows = (j.detalle || []).map((d, i) => ({
+        id: `loaded-${i}`,
+        fecha: d.FECHA_PAGO,
+        nDoc: String(d.N_DOCUMENTO || ''),
+        rut: String(d.RUT || ''),
+        detalle: String(d.DETALLE || ''),
+        monto: parseFloat(d.MONTO) || 0,
+        cuotas: String(d.CUOTAS || ''),
+        autorizador: String(d.AUTORIZADOR || 'MBL'),
+        isNC: d.IS_NC === true || d.IS_NC === 'true' || d.IS_NC === 'TRUE',
+        esCopec: d.ES_COPEC === true || d.ES_COPEC === 'true' || d.ES_COPEC === 'TRUE',
+        isCombustible: d.ES_COPEC === true || d.ES_COPEC === 'true' || d.ES_COPEC === 'TRUE',
+      }));
+      setNominaRows(rows);
+      setLoadedFromSheet(fecha);
+      setTab("revision");
+      showToast(`✓ Nómina del ${fecha} cargada (${rows.length} docs)`);
+    } catch(e) {
+      console.error(e);
+      showToast("❌ Error cargando nómina");
+    }
+    setLoadingNomina(false);
+  }, []);
+
+  // ─── APPS SCRIPT: SAVE ─────────────────────────────────────────────
+  const saveNominaToSheet = useCallback(async () => {
+    if(!APPS_SCRIPT_URL || APPS_SCRIPT_URL.startsWith('PEGA_')) {
+      showToast("⚠️ Apps Script no configurado — ver README_SETUP.md");
+      return;
+    }
+    if(nominaRows.length === 0) { showToast("Sin datos para guardar"); return; }
+    if(!aprobador) { showToast("Selecciona un aprobador en el header"); return; }
+
+    // Calcular totales (reusa la lógica del memo, pero recalculo directo para no depender del render)
+    const esCombustibleActual = (r) => {
+      const d = r.detalle.toUpperCase();
+      if(d.includes('LUBRICANTES')) return false;
+      return d.includes('COPEC S A') || d.includes('ESMAX DISTRIBUCION SPA');
+    };
+    const combRows = nominaRows.filter(r => esCombustibleActual(r));
+    const provRows = nominaRows.filter(r => !esCombustibleActual(r));
+    const totalComb = combRows.reduce((s,r) => s+r.monto, 0);
+    const totalProv = provRows.reduce((s,r) => s+r.monto, 0);
+    const total = totalComb + totalProv;
+
+    const payload = {
+      encabezado: {
+        FECHA_PAGO: fechas.viernes,
+        LUNES: fechas.lunes,
+        DOMINGO: fechas.domingo,
+        TOTAL: total,
+        TOTAL_PROVEEDORES: totalProv,
+        TOTAL_COPEC: totalComb,
+        TOTAL_DOCS: nominaRows.length,
+        APROBADOR: aprobador,
+        TIMESTAMP: new Date().toISOString(),
+      },
+      detalle: nominaRows.map(r => ({
+        FECHA_PAGO: fechas.viernes,
+        N_DOCUMENTO: r.nDoc,
+        RUT: r.rut,
+        DETALLE: r.detalle,
+        MONTO: r.monto,
+        CUOTAS: r.cuotas,
+        AUTORIZADOR: r.autorizador,
+        ES_COPEC: !!r.esCopec,
+        ES_LUBRICANTE: r.detalle.toUpperCase().includes('LUBRICANTES'),
+        IS_NC: !!r.isNC,
+      })),
+    };
+
+    setSaving(true);
+    try {
+      // Apps Script web apps no requieren headers especiales — usar text/plain para evitar preflight CORS
+      const r = await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'save', payload }),
+      });
+      const j = await r.json();
+      if(j.ok) {
+        showToast(`✓ Nómina ${fechas.viernes} guardada (${j.docs} docs)`);
+        fetchNominasGuardadas();
+        setLoadedFromSheet(fechas.viernes);
+      } else {
+        showToast(`❌ ${j.error || 'No se pudo guardar'}`);
+      }
+    } catch(e) {
+      console.error(e);
+      showToast("❌ Error guardando nómina");
+    }
+    setSaving(false);
+  }, [nominaRows, fechas, aprobador, fetchNominasGuardadas]);
 
   // ─── FILE READING ──────────────────────────────────────────────────
   const handleFile = (file, key) => {
@@ -61,19 +193,18 @@ export default function App() {
   const processNomina = useCallback(() => {
     if(!dataNomina || !dataCopec) return;
     setProcessing(true);
+    setLoadedFromSheet(null); // procesar una nueva siempre limpia el flag de "cargada"
     const lunes = parseDateInput(fechas.lunes);
     const domingo = parseDateInput(fechas.domingo);
     const pago = parseDateInput(fechas.viernes);
     if(!lunes || !domingo || !pago) { setProcessing(false); return; }
 
-    // Parse Defontana headers
     const hIdx = dataNomina.findIndex(r => r && r.some(c => typeof c === 'string' && c.includes('Vencimiento')));
     if(hIdx < 0) { setProcessing(false); return; }
     const headers = dataNomina[hIdx].map(h => h ? h.toString().trim() : '');
     const col = {}; headers.forEach((h, i) => { if(h) col[h] = i; });
     const dataRows = dataNomina.slice(hIdx + 1).filter(r => r && r.some(c => c !== null && c !== ''));
 
-    // Parse COPEC
     const cHIdx = dataCopec.findIndex(r => r && r.some(c => c?.toString().includes('Documento')));
     const cH = cHIdx >= 0 ? dataCopec[cHIdx] : [];
     const cDocCol = cH.findIndex(c => c?.toString().includes('Documento'));
@@ -86,7 +217,6 @@ export default function App() {
     });
     const copecNums = new Set(Object.keys(copecByDoc));
 
-    // Build historico doc count for cuota calc
     const pagoISO = fmtDateISO(pago);
     const histDocCount = {};
     historico.forEach(h => {
@@ -122,7 +252,6 @@ export default function App() {
       let defaultAuth = authMap[razon]?.auth || 'MBL';
       const isNC = saldo < 0;
 
-      // Cuota calculation
       let cuotaText = '';
       if(defaultAuth === 'LBS' && !COPEC_EXCLUSIONS.has(razon)) {
         const docKey = `${numDoc}|||${razon}`;
@@ -152,15 +281,12 @@ export default function App() {
     setTab("revision");
   }, [dataNomina, dataCopec, fechas, historico, authMap]);
 
-  // ─── EDIT ROW ──────────────────────────────────────────────────────
   const updateRow = (id, field, value) => {
     setNominaRows(prev => prev.map(r => r.id === id ? { ...r, [field]: value } : r));
   };
 
   // ─── STATS ─────────────────────────────────────────────────────────
   const stats = useMemo(() => {
-    // isCombustible se recalcula sobre el detalle ACTUAL (puede haber sido editado)
-    // Combustible = COPEC S A puro (petróleo) + ESMAX — excluye lubricantes
     const esCombustibleActual = (r) => {
       const d = r.detalle.toUpperCase();
       if(d.includes('LUBRICANTES')) return false;
@@ -185,7 +311,6 @@ export default function App() {
       if(!weekTotals[f]) weekTotals[f] = { total:0, combustible:0, proveedores:0, docs:0 };
       const m = parseMonto(h.MONTO);
       const det = (h.DETALLE || '').toUpperCase();
-      // Combustible histórico: COPEC S A sin lubricantes + ESMAX
       const esCombHist = (det.includes('COPEC S A') && !det.includes('LUBRICANTES')) || det.includes('ESMAX DISTRIBUCION SPA');
       weekTotals[f].total += m;
       weekTotals[f].docs += 1;
@@ -228,10 +353,6 @@ export default function App() {
   }, [nominaRows, historico, fechas.viernes]);
 
   // ─── CORREO LBS ────────────────────────────────────────────────────
-  // Clasifica usando el detalle EDITADO por el usuario (post-revisión)
-  // Petróleo  : detalle contiene "COPEC S A" pero NO "(LUBRICANTES)"
-  // Lubricantes: detalle contiene "(LUBRICANTES)"  (con o sin "NOTA DE CREDITO")
-  // Neumáticos : autorizador LBS y no es Petróleo ni Lubricantes
   const esPetroleo    = (detalle) => detalle.toUpperCase().includes('COPEC S A') && !detalle.toUpperCase().includes('LUBRICANTES');
   const esLubricante  = (detalle) => detalle.toUpperCase().includes('LUBRICANTES');
 
@@ -246,8 +367,7 @@ export default function App() {
     const totalLubricantes = lubricantes.reduce((s, r) => s + r.monto, 0);
     const totalNeumaticos  = neumaticos.reduce((s, r) => s + r.monto, 0);
 
-    // Comparativo semana anterior desde histórico
-    // En el histórico los lubricantes se guardan como "COPEC S A (LUBRICANTES)" (nombre editado)
+    // Comparativo semana anterior + promedio 4 semanas desde histórico
     const pagoISO = fechas.viernes;
     const semanas = {};
     historico.forEach(h => {
@@ -263,13 +383,48 @@ export default function App() {
     const semanasSorted = Object.entries(semanas).sort((a,b) => a[0].localeCompare(b[0]));
     const prevSemana = semanasSorted.length > 0 ? semanasSorted[semanasSorted.length - 1][1] : null;
 
+    // Promedio 4 últimas semanas por categoría
+    const last4 = semanasSorted.slice(-4).map(s => s[1]);
+    const avg = (arr, key) => {
+      const vals = arr.map(s => s[key]).filter(v => v > 0);
+      return vals.length >= 2 ? vals.reduce((s,v) => s+v, 0) / vals.length : 0;
+    };
+    const avgP = avg(last4, 'petroleo');
+    const avgL = avg(last4, 'lubricantes');
+    const avgN = avg(last4, 'neumaticos');
+
     const varP = prevSemana?.petroleo    > 0 ? ((totalPetroleo    / prevSemana.petroleo)    - 1) * 100 : null;
     const varL = prevSemana?.lubricantes > 0 ? ((totalLubricantes / prevSemana.lubricantes) - 1) * 100 : null;
     const varN = prevSemana?.neumaticos  > 0 ? ((totalNeumaticos  / prevSemana.neumaticos)  - 1) * 100 : null;
 
+    const varPavg = avgP > 0 ? ((totalPetroleo    / avgP) - 1) * 100 : null;
+    const varLavg = avgL > 0 ? ((totalLubricantes / avgL) - 1) * 100 : null;
+    const varNavg = avgN > 0 ? ((totalNeumaticos  / avgN) - 1) * 100 : null;
+
+    // Alertas: una por categoría si variación supera umbrales
+    const buildAlert = (label, vari, avgVar) => {
+      const worst = [vari, avgVar].filter(v => v !== null).reduce((a,b) => Math.abs(b) > Math.abs(a||0) ? b : a, null);
+      if(worst === null) return null;
+      const absV = Math.abs(worst);
+      if(absV < 15) return null;
+      const level = absV >= 30 ? 'high' : 'medium';
+      const direction = worst > 0 ? '▲' : '▼';
+      const parts = [];
+      if(vari !== null && Math.abs(vari) >= 15) parts.push(`${vari > 0 ? '+' : ''}${vari.toFixed(0)}% vs semana anterior`);
+      if(avgVar !== null && Math.abs(avgVar) >= 15) parts.push(`${avgVar > 0 ? '+' : ''}${avgVar.toFixed(0)}% vs promedio 4 sem`);
+      return { label, level, direction, parts };
+    };
+    const alerts = {
+      petroleo:    buildAlert('Petróleo',    varP, varPavg),
+      lubricantes: buildAlert('Lubricantes', varL, varLavg),
+      neumaticos:  buildAlert('Neumáticos',  varN, varNavg),
+    };
+
     return { petroleo, lubricantes, neumaticos,
              totalPetroleo, totalLubricantes, totalNeumaticos,
-             prevSemana, varP, varL, varN };
+             prevSemana, varP, varL, varN,
+             avgP, avgL, avgN, varPavg, varLavg, varNavg,
+             alerts };
   }, [nominaRows, historico, fechas.viernes]);
 
   // ─── SEARCH ────────────────────────────────────────────────────────
@@ -286,7 +441,6 @@ export default function App() {
     setSearchResults(results);
   }, [searchQuery, historico]);
 
-  // ─── DOWNLOAD EXCEL ────────────────────────────────────────────────
   const downloadExcel = () => {
     const header = ['FECHA_PAGO','N_DOCUMENTO','RUT','DETALLE','MONTO','CUOTAS','AUTORIZADOR'];
     const data = nominaRows.map(r => [r.fecha, r.nDoc, r.rut, r.detalle, r.monto, r.cuotas, r.autorizador]);
@@ -302,7 +456,6 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  // ─── COPY FOR SHEETS ──────────────────────────────────────────────
   const copyForSheets = () => {
     const lines = nominaRows.map(r =>
       [r.fecha, r.nDoc, r.rut, r.detalle, r.monto, r.cuotas, r.autorizador].join('\t')
@@ -314,15 +467,14 @@ export default function App() {
 
   const showToast = msg => { setToast(msg); setTimeout(() => setToast(""), 4000); };
 
-  // ─── STYLES ────────────────────────────────────────────────────────
   const S = {
     header: { background:'linear-gradient(135deg,#0D3B2E 0%,#14614B 50%,#1D9E75 100%)', color:'#fff', padding:'14px 24px' },
-    headerInner: { maxWidth:1100, margin:'0 auto', display:'flex', alignItems:'center', justifyContent:'space-between' },
+    headerInner: { maxWidth:1100, margin:'0 auto', display:'flex', alignItems:'center', justifyContent:'space-between', gap:16, flexWrap:'wrap' },
     tabs: { background:'#fff', borderBottom:'1px solid #E0E0D8', position:'sticky', top:0, zIndex:20 },
-    tabsInner: { maxWidth:1100, margin:'0 auto', display:'flex' },
+    tabsInner: { maxWidth:1100, margin:'0 auto', display:'flex', overflowX:'auto' },
     tabBtn: (active) => ({ padding:'12px 20px', fontSize:13, fontWeight:600, border:'none', background:active?'rgba(29,158,117,.04)':'none',
       cursor:'pointer', borderBottom:active?'2.5px solid #1D9E75':'2.5px solid transparent',
-      color:active?'#14614B':'#999', transition:'all .2s', fontFamily:'var(--sans)' }),
+      color:active?'#14614B':'#999', transition:'all .2s', fontFamily:'var(--sans)', whiteSpace:'nowrap' }),
     container: { maxWidth:1100, margin:'0 auto', padding:16 },
     card: { background:'#fff', borderRadius:12, border:'1px solid #E0E0D8', padding:20, marginBottom:12 },
     sectionTitle: { fontSize:11, fontWeight:700, color:'#aaa', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:14 },
@@ -335,11 +487,12 @@ export default function App() {
   };
 
   const tabs = [
-    { id:"carga",    label:"① Carga",      icon:"📁" },
-    { id:"revision", label:"② Revisión",   icon:"✏️" },
-    { id:"confirmar",label:"③ Confirmar",  icon:"✅" },
-    { id:"buscar",   label:"④ Histórico",  icon:"🔍" },
-    { id:"correo",   label:"⑤ Correo LBS", icon:"✉️" },
+    { id:"carga",    label:"① Carga",       icon:"📁" },
+    { id:"revision", label:"② Revisión",    icon:"✏️" },
+    { id:"confirmar",label:"③ Confirmar",   icon:"✅" },
+    { id:"anterior", label:"④ Anteriores",  icon:"📂" },
+    { id:"buscar",   label:"⑤ Histórico",   icon:"🔍" },
+    { id:"correo",   label:"⑥ Correo LBS",  icon:"✉️" },
   ];
 
   return (
@@ -352,10 +505,24 @@ export default function App() {
             <h1 style={{ ...S.mono, fontSize:18, fontWeight:700, letterSpacing:'-.02em', margin:0 }}>NÓMINA SEMANAL</h1>
             <p style={{ fontSize:12, opacity:.7, marginTop:2 }}>Transportes Bello e Hijos Ltda.</p>
           </div>
-          <div style={{ textAlign:'right' }}>
-            {loadingSheets
-              ? <span className="pulse" style={{ fontSize:11, opacity:.6 }}>Cargando Google Sheets…</span>
-              : <span style={{ fontSize:11, opacity:.6 }}>{historico.length.toLocaleString('de-DE')} registros · {Object.keys(authMap).length} proveedores</span>}
+          <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+            {/* Aprobador */}
+            <div style={{ background:'rgba(255,255,255,.12)', borderRadius:8, padding:'6px 10px',
+              display:'flex', alignItems:'center', gap:8, border:'1px solid rgba(255,255,255,.2)' }}>
+              <span style={{ fontSize:10, opacity:.7, textTransform:'uppercase', letterSpacing:'.05em', fontWeight:600 }}>Aprobador</span>
+              <select value={aprobador} onChange={e => setAprobador(e.target.value)}
+                style={{ background:'rgba(255,255,255,.15)', border:'1px solid rgba(255,255,255,.3)',
+                  color:'#fff', padding:'3px 8px', borderRadius:6, fontSize:12, fontWeight:700, cursor:'pointer', outline:'none' }}>
+                {AUTH_LIST.map(a => <option key={a} value={a} style={{ color:'#000' }}>{a}</option>)}
+              </select>
+            </div>
+            <div style={{ textAlign:'right' }}>
+              {loadingSheets
+                ? <span className="pulse" style={{ fontSize:11, opacity:.6 }}>Cargando…</span>
+                : <span style={{ fontSize:11, opacity:.6 }}>
+                    {historico.length.toLocaleString('de-DE')} registros · {nominasGuardadas.length} nóminas guardadas
+                  </span>}
+            </div>
           </div>
         </div>
       </header>
@@ -376,6 +543,29 @@ export default function App() {
         <div className="fade-in" style={{ position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)',
           background:'#0D3B2E', color:'#fff', padding:'12px 24px', borderRadius:12, fontSize:13, fontWeight:600, zIndex:100,
           boxShadow:'0 8px 32px rgba(0,0,0,.2)' }}>{toast}</div>
+      )}
+
+      {/* Banner "cargada del sheet" */}
+      {loadedFromSheet && nominaRows.length > 0 && (
+        <div className="no-print" style={{ maxWidth:1100, margin:'12px auto 0', padding:'0 16px' }}>
+          <div style={{ background:'#EFF6FF', border:'1px solid #BFDBFE', borderRadius:10,
+            padding:'10px 14px', display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+              <span style={{ fontSize:16 }}>📂</span>
+              <div>
+                <p style={{ fontSize:12, fontWeight:700, color:'#1E40AF' }}>Viendo nómina guardada · {loadedFromSheet}</p>
+                <p style={{ fontSize:10, color:'#3B82F6', marginTop:2 }}>
+                  Cambios hechos aquí no se guardan hasta que pulses "Guardar en Sheet" en la pestaña Confirmar
+                </p>
+              </div>
+            </div>
+            <button onClick={() => { setLoadedFromSheet(null); setNominaRows([]); setTab('carga'); }}
+              style={{ padding:'6px 12px', background:'#fff', border:'1px solid #BFDBFE', borderRadius:6,
+                fontSize:11, fontWeight:600, color:'#1E40AF', cursor:'pointer' }}>
+              Limpiar y empezar nueva
+            </button>
+          </div>
+        </div>
       )}
 
       <main style={S.container} className="no-print">
@@ -422,7 +612,7 @@ export default function App() {
             {nominaRows.length === 0 ? (
               <div style={{ ...S.card, textAlign:'center', padding:48, color:'#aaa' }}>
                 <p style={{ fontSize:16, marginBottom:8 }}>Sin datos</p>
-                <p style={{ fontSize:13 }}>Vuelve a la pestaña Carga y procesa los archivos primero.</p>
+                <p style={{ fontSize:13 }}>Procesa archivos en la pestaña Carga, o abre una nómina anterior.</p>
               </div>
             ) : (<>
               <div style={S.grid(4, 10)}>
@@ -503,7 +693,7 @@ export default function App() {
           <div className="fade-in">
             {nominaRows.length === 0 ? (
               <div style={{ ...S.card, textAlign:'center', padding:48, color:'#aaa' }}>
-                Primero procesa los archivos en la pestaña Carga.
+                Primero procesa los archivos en la pestaña Carga, o abre una anterior.
               </div>
             ) : (<>
               <div style={S.card}>
@@ -606,12 +796,111 @@ export default function App() {
                   })}
                 </div>
               </div>
-              <div style={S.grid(3, 10)}>
+              {/* Botones de acción */}
+              <div style={S.grid(2, 10)}>
+                <button onClick={saveNominaToSheet} disabled={saving}
+                  style={{ ...S.btn(saving ? '#bbb' : '#0D3B2E'),
+                    boxShadow: saving ? 'none' : '0 4px 16px rgba(13,59,46,.3)' }}>
+                  {saving ? 'Guardando…' : `💾 Guardar en Sheet (${aprobador})`}
+                </button>
+                <button onClick={() => window.print()} style={S.btn('#1D9E75')}>
+                  🖨 Imprimir nómina
+                </button>
+              </div>
+              <div style={{ ...S.grid(2, 10), marginTop:10 }}>
                 <button onClick={copyForSheets} style={S.btn('#2563EB')}>📋 Copiar para Sheets</button>
                 <button onClick={downloadExcel} style={S.btn('#fff', '#14614B', '2px solid #1D9E75')}>⬇ Descargar Excel</button>
-                <button onClick={() => window.print()} style={S.btn('#0D3B2E')}>🖨 Imprimir nómina</button>
               </div>
             </>)}
+          </div>
+        )}
+
+        {/* ═══ TAB 4: NÓMINAS ANTERIORES ═══ */}
+        {tab === "anterior" && (
+          <div className="fade-in">
+            <div style={S.card}>
+              <div style={S.sectionTitle}>Cargar nómina por fecha</div>
+              <div style={{ display:'flex', gap:10, alignItems:'flex-end' }}>
+                <div style={{ flex:1 }}>
+                  <label style={S.fieldLabel}>Fecha de pago</label>
+                  <input type="date" value={fechas.viernes}
+                    onChange={e => setFechas(p => ({ ...p, viernes:e.target.value }))} style={S.input}/>
+                </div>
+                <button onClick={() => loadNominaFromSheet(fechas.viernes)} disabled={loadingNomina}
+                  style={{ padding:'10px 24px', background: loadingNomina ? '#bbb' : '#1D9E75', color:'#fff',
+                    border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor: loadingNomina ? 'default' : 'pointer' }}>
+                  {loadingNomina ? 'Cargando…' : 'Cargar →'}
+                </button>
+              </div>
+              {APPS_SCRIPT_URL.startsWith('PEGA_') && (
+                <p style={{ fontSize:11, color:'#DC2626', marginTop:8 }}>
+                  ⚠️ Apps Script no configurado. Sigue los pasos en README_SETUP.md
+                </p>
+              )}
+            </div>
+
+            {nominasGuardadas.length > 0 && (
+              <div style={{ ...S.card, padding:0, overflow:'hidden' }}>
+                <div style={{ padding:'12px 20px', borderBottom:'1px solid #E0E0D8', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <span style={S.sectionTitle}>Nóminas guardadas ({nominasGuardadas.length})</span>
+                  <button onClick={fetchNominasGuardadas}
+                    style={{ padding:'4px 10px', fontSize:10, background:'#F3F4F6', border:'1px solid #E5E7EB',
+                      borderRadius:6, cursor:'pointer', color:'#666', fontWeight:600 }}>
+                    🔄 Refrescar
+                  </button>
+                </div>
+                <div style={{ overflowX:'auto', maxHeight:'60vh', overflowY:'auto' }}>
+                  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                    <thead style={{ position:'sticky', top:0, background:'#fff', zIndex:1 }}>
+                      <tr style={{ borderBottom:'2px solid #E0E0D8' }}>
+                        {['FECHA DE PAGO','SEMANA','TOTAL','DOCS','APROBADOR','GUARDADA',''].map((h, i) => (
+                          <th key={i} style={{ padding:'10px', textAlign: i===2?'right':'left',
+                            fontSize:10, fontWeight:700, color:'#666', textTransform:'uppercase', letterSpacing:'.04em' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {nominasGuardadas.map((n, i) => (
+                        <tr key={i} style={{ borderBottom:'1px solid #f0f0ec',
+                          background: i % 2 ? '#FAFAF7' : '#fff' }}>
+                          <td style={{ padding:'10px', fontWeight:700, color:'#0D3B2E', ...S.mono }}>{n.FECHA_PAGO}</td>
+                          <td style={{ padding:'10px', color:'#888', fontSize:11 }}>
+                            {n.LUNES} → {n.DOMINGO}
+                          </td>
+                          <td style={{ padding:'10px', textAlign:'right', fontWeight:700, ...S.mono }}>
+                            {fmtCLP(parseFloat(n.TOTAL) || 0)}
+                          </td>
+                          <td style={{ padding:'10px', ...S.mono, color:'#666' }}>{n.TOTAL_DOCS}</td>
+                          <td style={{ padding:'10px' }}>
+                            <span style={{ background:'#E8F5EF', color:'#0D3B2E', padding:'3px 10px',
+                              borderRadius:99, fontSize:11, fontWeight:700 }}>{n.APROBADOR}</span>
+                          </td>
+                          <td style={{ padding:'10px', fontSize:10, color:'#999' }}>
+                            {n.TIMESTAMP ? String(n.TIMESTAMP).slice(0,10) : ''}
+                          </td>
+                          <td style={{ padding:'10px' }}>
+                            <button onClick={() => loadNominaFromSheet(n.FECHA_PAGO)}
+                              style={{ padding:'5px 14px', background:'#1D9E75', color:'#fff', border:'none',
+                                borderRadius:6, fontSize:11, fontWeight:700, cursor:'pointer' }}>
+                              Abrir →
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {!loadingSheets && nominasGuardadas.length === 0 && !APPS_SCRIPT_URL.startsWith('PEGA_') && (
+              <div style={{ ...S.card, textAlign:'center', padding:40, color:'#aaa' }}>
+                <p style={{ fontSize:14 }}>No hay nóminas guardadas todavía.</p>
+                <p style={{ fontSize:12, marginTop:4 }}>
+                  Procesa una nómina y pulsa "Guardar en Sheet" en la pestaña Confirmar.
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -621,33 +910,47 @@ export default function App() {
             {nominaRows.length === 0 ? (
               <div style={{ ...S.card, textAlign:'center', padding:48, color:'#aaa' }}>
                 <p style={{ fontSize:16, marginBottom:8 }}>Sin datos</p>
-                <p style={{ fontSize:13 }}>Primero procesa los archivos en la pestaña Carga.</p>
+                <p style={{ fontSize:13 }}>Procesa una nómina o abre una anterior.</p>
               </div>
             ) : (<>
-              {/* Cuadro comparativo */}
+              {/* Cuadro comparativo con 4-week avg */}
               <div style={{ ...S.card, marginBottom:16 }}>
-                <div style={S.sectionTitle}>Comparativo vs semana anterior — Pago {fechas.viernes}</div>
+                <div style={S.sectionTitle}>Comparativo vs anterior y promedio 4 semanas — Pago {fechas.viernes}</div>
                 <div style={S.grid(3, 10)}>
                   {[
-                    { label:'Petróleo',    total: correoLBS.totalPetroleo,    prev: correoLBS.prevSemana?.petroleo,    vari: correoLBS.varP, color:'#0D3B2E', bg:'#E8F5EF', border:'#C5E8D5' },
-                    { label:'Lubricantes', total: correoLBS.totalLubricantes, prev: correoLBS.prevSemana?.lubricantes, vari: correoLBS.varL, color:'#14614B', bg:'#F0FDF4', border:'#BBF7D0' },
-                    { label:'Neumáticos',  total: correoLBS.totalNeumaticos,  prev: correoLBS.prevSemana?.neumaticos,  vari: correoLBS.varN, color:'#1D4ED8', bg:'#EFF6FF', border:'#BFDBFE' },
-                  ].map(({ label, total, prev, vari, color, bg, border }) => (
+                    { label:'Petróleo',    total: correoLBS.totalPetroleo,    prev: correoLBS.prevSemana?.petroleo,    avg: correoLBS.avgP, vari: correoLBS.varP, variAvg: correoLBS.varPavg, color:'#0D3B2E', bg:'#E8F5EF', border:'#C5E8D5' },
+                    { label:'Lubricantes', total: correoLBS.totalLubricantes, prev: correoLBS.prevSemana?.lubricantes, avg: correoLBS.avgL, vari: correoLBS.varL, variAvg: correoLBS.varLavg, color:'#14614B', bg:'#F0FDF4', border:'#BBF7D0' },
+                    { label:'Neumáticos',  total: correoLBS.totalNeumaticos,  prev: correoLBS.prevSemana?.neumaticos,  avg: correoLBS.avgN, vari: correoLBS.varN, variAvg: correoLBS.varNavg, color:'#1D4ED8', bg:'#EFF6FF', border:'#BFDBFE' },
+                  ].map(({ label, total, prev, avg, vari, variAvg, color, bg, border }) => (
                     <div key={label} style={{ background:bg, borderRadius:10, padding:14, border:`1px solid ${border}` }}>
                       <p style={{ fontSize:11, fontWeight:700, color, textTransform:'uppercase', letterSpacing:'.04em' }}>{label}</p>
                       <p style={{ fontSize:20, fontWeight:800, color:'#1a1a1a', marginTop:4, fontFamily:"'DM Mono',monospace" }}>{fmtCLP(total)}</p>
-                      {prev != null && prev > 0 ? (
-                        <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6, flexWrap:'wrap' }}>
-                          <span style={{ fontSize:10, color:'#888' }}>Ant: {fmtCLP(prev)}</span>
-                          {vari !== null && (
-                            <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4,
-                              background: vari > 0 ? '#FEF3C7' : '#D1FAE5',
-                              color: vari > 0 ? '#92400E' : '#065F46' }}>
-                              {vari > 0 ? '▲' : '▼'} {Math.abs(vari).toFixed(1)}%
-                            </span>
-                          )}
-                        </div>
-                      ) : <p style={{ fontSize:10, color:'#ccc', marginTop:4 }}>Sin semana anterior</p>}
+                      <div style={{ display:'flex', flexDirection:'column', gap:3, marginTop:8 }}>
+                        {prev != null && prev > 0 ? (
+                          <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+                            <span style={{ fontSize:10, color:'#888' }}>Anterior: {fmtCLP(prev)}</span>
+                            {vari !== null && (
+                              <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4,
+                                background: vari > 0 ? '#FEF3C7' : '#D1FAE5',
+                                color: vari > 0 ? '#92400E' : '#065F46' }}>
+                                {vari > 0 ? '▲' : '▼'} {Math.abs(vari).toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
+                        ) : <p style={{ fontSize:10, color:'#ccc' }}>Sin semana anterior</p>}
+                        {avg > 0 ? (
+                          <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+                            <span style={{ fontSize:10, color:'#888' }}>Promedio 4s: {fmtCLP(avg)}</span>
+                            {variAvg !== null && (
+                              <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4,
+                                background: variAvg > 0 ? '#FEF3C7' : '#D1FAE5',
+                                color: variAvg > 0 ? '#92400E' : '#065F46' }}>
+                                {variAvg > 0 ? '▲' : '▼'} {Math.abs(variAvg).toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -660,89 +963,113 @@ export default function App() {
                   emoji: '⛽',
                   titulo: 'PETRÓLEO',
                   subtitulo: 'COPEC',
-                  asunto: `⛽ Nómina Petróleo COPEC — Pago ${fechas.viernes}`,
-                  color: '#0D3B2E',
-                  colorLight: '#1D9E75',
-                  bgHeader: '#E8F5EF',
-                  borderHeader: '#C5E8D5',
-                  bgStripe: '#F0FAF5',
-                  rows: correoLBS.petroleo,
-                  total: correoLBS.totalPetroleo,
-                  showCuotas: false,
-                  showProveedor: false,
+                  color: '#0D3B2E', colorLight: '#1D9E75',
+                  bgHeader: '#E8F5EF', borderHeader: '#C5E8D5', bgStripe: '#F0FAF5',
+                  rows: correoLBS.petroleo, total: correoLBS.totalPetroleo,
+                  alert: correoLBS.alerts.petroleo,
+                  prev: correoLBS.prevSemana?.petroleo, avg: correoLBS.avgP,
+                  vari: correoLBS.varP, variAvg: correoLBS.varPavg,
+                  showCuotas: false, showProveedor: false,
                 },
                 {
                   key: 'lubricantes',
                   emoji: '🛢️',
                   titulo: 'LUBRICANTES',
                   subtitulo: 'COPEC S A (LUBRICANTES)',
-                  asunto: `🛢️ Nómina Lubricantes COPEC — Pago ${fechas.viernes}`,
-                  color: '#14614B',
-                  colorLight: '#22C55E',
-                  bgHeader: '#F0FDF4',
-                  borderHeader: '#BBF7D0',
-                  bgStripe: '#F0FDF4',
-                  rows: correoLBS.lubricantes,
-                  total: correoLBS.totalLubricantes,
-                  showCuotas: false,
-                  showProveedor: false,
+                  color: '#14614B', colorLight: '#22C55E',
+                  bgHeader: '#F0FDF4', borderHeader: '#BBF7D0', bgStripe: '#F0FDF4',
+                  rows: correoLBS.lubricantes, total: correoLBS.totalLubricantes,
+                  alert: correoLBS.alerts.lubricantes,
+                  prev: correoLBS.prevSemana?.lubricantes, avg: correoLBS.avgL,
+                  vari: correoLBS.varL, variAvg: correoLBS.varLavg,
+                  showCuotas: false, showProveedor: false,
                 },
                 {
                   key: 'neumaticos',
                   emoji: '🔧',
                   titulo: 'NEUMÁTICOS',
                   subtitulo: 'Neumáticos',
-                  asunto: `🔧 Nómina Neumáticos — Pago ${fechas.viernes}`,
-                  color: '#1D4ED8',
-                  colorLight: '#3B82F6',
-                  bgHeader: '#EFF6FF',
-                  borderHeader: '#BFDBFE',
-                  bgStripe: '#F0F5FF',
-                  rows: correoLBS.neumaticos,
-                  total: correoLBS.totalNeumaticos,
-                  showCuotas: true,
-                  showProveedor: true,
+                  color: '#1D4ED8', colorLight: '#3B82F6',
+                  bgHeader: '#EFF6FF', borderHeader: '#BFDBFE', bgStripe: '#F0F5FF',
+                  rows: correoLBS.neumaticos, total: correoLBS.totalNeumaticos,
+                  alert: correoLBS.alerts.neumaticos,
+                  prev: correoLBS.prevSemana?.neumaticos, avg: correoLBS.avgN,
+                  vari: correoLBS.varN, variAvg: correoLBS.varNavg,
+                  showCuotas: true, showProveedor: true,
                 },
-              ].map(({ key, emoji, titulo, subtitulo, asunto, color, colorLight, bgHeader, borderHeader, bgStripe, rows, total, showCuotas, showProveedor }) => {
-                // Número de columnas según tipo
+              ].map(({ key, emoji, titulo, subtitulo, color, colorLight, bgHeader, borderHeader, bgStripe,
+                       rows, total, alert, prev, avg, vari, variAvg, showCuotas, showProveedor }) => {
                 const numCols = 3 + (showCuotas ? 1 : 0) + (showProveedor ? 1 : 0);
 
-                // Genera HTML del correo para copiar — se ve con formato al pegar en Outlook/Gmail
+                // Color del banner de alerta embebido en correo
+                const alertColors = alert ? (alert.level === 'high'
+                  ? { bg:'#FEF2F2', border:'#FCA5A5', text:'#991B1B' }
+                  : { bg:'#FFF7ED', border:'#FED7AA', text:'#9A3412' }) : null;
+
+                // HTML del correo (incluye alerta si corresponde)
                 const buildHTML = () => {
+                  const alertHTML = alert ? `
+                    <tr><td style="padding:0 28px 16px;">
+                      <table width="100%" cellpadding="0" cellspacing="0" style="background:${alertColors.bg};border:1px solid ${alertColors.border};border-radius:8px;">
+                        <tr><td style="padding:12px 14px;">
+                          <p style="margin:0;font-size:12px;font-weight:700;color:${alertColors.text};">
+                            ⚠️ Alerta: ${alert.label} ${alert.direction} — ${alert.parts.join(' · ')}
+                          </p>
+                        </td></tr>
+                      </table>
+                    </td></tr>` : '';
+
+                  // Fila comparativa (siempre visible)
+                  const cmpHTML = `
+                    <tr><td style="padding:0 28px 14px;">
+                      <table width="100%" cellpadding="0" cellspacing="0" style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;">
+                        <tr>
+                          <td style="padding:10px 14px;font-size:11px;color:#6B7280;">Esta semana</td>
+                          <td style="padding:10px 14px;font-size:11px;color:#6B7280;">Anterior</td>
+                          <td style="padding:10px 14px;font-size:11px;color:#6B7280;">Prom. 4 sem</td>
+                        </tr>
+                        <tr>
+                          <td style="padding:4px 14px 10px;font-family:monospace;font-weight:700;font-size:13px;color:${color};">${fmtCLP(total)}</td>
+                          <td style="padding:4px 14px 10px;font-family:monospace;font-size:12px;color:#444;">
+                            ${prev ? fmtCLP(prev) : '—'}
+                            ${vari !== null ? ` <span style="color:${vari > 0 ? '#B91C1C' : '#047857'};font-weight:700;">(${vari > 0 ? '▲' : '▼'}${Math.abs(vari).toFixed(0)}%)</span>` : ''}
+                          </td>
+                          <td style="padding:4px 14px 10px;font-family:monospace;font-size:12px;color:#444;">
+                            ${avg > 0 ? fmtCLP(avg) : '—'}
+                            ${variAvg !== null ? ` <span style="color:${variAvg > 0 ? '#B91C1C' : '#047857'};font-weight:700;">(${variAvg > 0 ? '▲' : '▼'}${Math.abs(variAvg).toFixed(0)}%)</span>` : ''}
+                          </td>
+                        </tr>
+                      </table>
+                    </td></tr>`;
+
                   const filasTR = rows.map((r, i) => {
                     const bg = i % 2 === 0 ? '#ffffff' : bgStripe;
                     const montoColor = r.monto < 0 ? '#DC2626' : '#1a1a1a';
-                    const montoStr = fmtCLP(r.monto);
                     const provTd = showProveedor
-                      ? `<td style="padding:8px 12px;font-size:13px;color:#444;border-bottom:1px solid #E8E8E3;">${r.detalle}</td>`
-                      : '';
+                      ? `<td style="padding:8px 12px;font-size:13px;color:#444;border-bottom:1px solid #E8E8E3;">${r.detalle}</td>` : '';
                     const cuotaTd = showCuotas
                       ? `<td style="padding:8px 12px;text-align:center;border-bottom:1px solid #E8E8E3;">
                           ${r.cuotas ? `<span style="background:#DBEAFE;color:#1D4ED8;font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;">${r.cuotas}</span>` : ''}
-                        </td>`
-                      : '';
+                        </td>` : '';
                     return `<tr style="background:${bg};">
                       <td style="padding:8px 12px;font-family:monospace;font-size:13px;border-bottom:1px solid #E8E8E3;">${r.nDoc}</td>
                       <td style="padding:8px 12px;text-align:center;font-size:13px;color:#555;border-bottom:1px solid #E8E8E3;">${fechas.viernes}</td>
                       ${provTd}
-                      <td style="padding:8px 12px;text-align:right;font-family:monospace;font-weight:600;font-size:13px;color:${montoColor};border-bottom:1px solid #E8E8E3;">${montoStr}</td>
+                      <td style="padding:8px 12px;text-align:right;font-family:monospace;font-weight:600;font-size:13px;color:${montoColor};border-bottom:1px solid #E8E8E3;">${fmtCLP(r.monto)}</td>
                       ${cuotaTd}
                     </tr>`;
                   }).join('');
 
                   const provTh = showProveedor
-                    ? `<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:700;color:#555;background:#F3F4F6;border-bottom:2px solid #E5E7EB;text-transform:uppercase;letter-spacing:.04em;">Proveedor</th>`
-                    : '';
+                    ? `<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:700;color:#555;background:#F3F4F6;border-bottom:2px solid #E5E7EB;text-transform:uppercase;letter-spacing:.04em;">Proveedor</th>` : '';
                   const cuotaTh = showCuotas
-                    ? `<th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:700;color:#555;background:#F3F4F6;border-bottom:2px solid #E5E7EB;text-transform:uppercase;letter-spacing:.04em;">Cuota</th>`
-                    : '';
+                    ? `<th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:700;color:#555;background:#F3F4F6;border-bottom:2px solid #E5E7EB;text-transform:uppercase;letter-spacing:.04em;">Cuota</th>` : '';
                   const totalTdExtra = showProveedor ? `<td style="padding:10px 12px;background:#F8F9FA;border-top:2px solid #dee2e6;"></td>` : '';
                   const totalCuotaTd = showCuotas ? `<td style="padding:10px 12px;background:#F8F9FA;border-top:2px solid #dee2e6;"></td>` : '';
 
                   return `<!DOCTYPE html><html><body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background:#f4f4f0;">
                   <table width="100%" cellpadding="0" cellspacing="0" style="max-width:680px;margin:0 auto;background:#f4f4f0;">
                     <tr><td style="padding:32px 24px 16px;">
-                      <!-- Header banner -->
                       <table width="100%" cellpadding="0" cellspacing="0" style="background:linear-gradient(135deg,${color} 0%,${colorLight} 100%);border-radius:12px 12px 0 0;">
                         <tr><td style="padding:24px 28px;">
                           <p style="margin:0;font-size:26px;line-height:1;">${emoji}</p>
@@ -750,14 +1077,14 @@ export default function App() {
                           <p style="margin:4px 0 0;font-size:12px;color:rgba(255,255,255,.75);">Transportes Bello e Hijos Ltda. &nbsp;·&nbsp; Fecha de pago: <strong>${fechas.viernes}</strong></p>
                         </td></tr>
                       </table>
-                      <!-- Body -->
                       <table width="100%" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:0 0 12px 12px;border:1px solid #E0E0D8;border-top:none;">
                         <tr><td style="padding:24px 28px 8px;">
                           <p style="margin:0;font-size:14px;color:#333;">Estimado Luis,</p>
                           <p style="margin:8px 0 0;font-size:14px;color:#333;font-weight:700;">Favor revisar y dar V° B° para pago.</p>
                         </td></tr>
-                        <tr><td style="padding:16px 28px 28px;">
-                          <!-- Tabla de facturas -->
+                        ${alertHTML}
+                        ${cmpHTML}
+                        <tr><td style="padding:0 28px 28px;">
                           <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border-radius:8px;overflow:hidden;border:1px solid #E0E0D8;">
                             <thead>
                               <tr style="background:${color};">
@@ -784,7 +1111,6 @@ export default function App() {
                           </table>
                         </td></tr>
                       </table>
-                      <!-- Footer -->
                       <p style="text-align:center;font-size:11px;color:#aaa;margin:12px 0 0;">Generado por Sistema Nómina Semanal · Transportes Bello e Hijos Ltda.</p>
                     </td></tr>
                   </table></body></html>`;
@@ -792,7 +1118,6 @@ export default function App() {
 
                 return (
                 <div key={key} style={{ ...S.card, marginBottom:16 }}>
-                  {/* Encabezado del bloque */}
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
                     <div style={{ background:bgHeader, border:`1px solid ${borderHeader}`, borderRadius:8,
                       padding:'6px 16px', display:'inline-flex', alignItems:'center', gap:10 }}>
@@ -804,7 +1129,6 @@ export default function App() {
                     </div>
                     <button
                       onClick={() => {
-                        // Copia HTML al portapapeles — se ve con formato al pegar en Outlook/Gmail
                         const html = buildHTML();
                         try {
                           const blob = new Blob([html], { type: 'text/html' });
@@ -813,7 +1137,6 @@ export default function App() {
                             showToast(`✓ Correo ${titulo} copiado — pega directo en Outlook o Gmail`)
                           );
                         } catch {
-                          // Fallback texto plano si el navegador no soporta ClipboardItem
                           const filas = rows.map(r => {
                             const base = [r.nDoc, fechas.viernes];
                             if(showProveedor) base.push(r.detalle);
@@ -835,14 +1158,23 @@ export default function App() {
                     </button>
                   </div>
 
+                  {/* Alerta en la vista previa */}
+                  {alert && (
+                    <div style={{ background: alertColors.bg, border:`1px solid ${alertColors.border}`,
+                      borderRadius:8, padding:'10px 14px', marginBottom:12, display:'flex', alignItems:'center', gap:8 }}>
+                      <span style={{ fontSize:16 }}>⚠️</span>
+                      <p style={{ fontSize:12, fontWeight:700, color: alertColors.text }}>
+                        {alert.label} {alert.direction} — {alert.parts.join(' · ')}
+                      </p>
+                    </div>
+                  )}
+
                   {rows.length === 0 ? (
                     <div style={{ background:'#FAFAF7', borderRadius:8, padding:24, textAlign:'center', color:'#bbb', fontSize:12 }}>
                       No hay documentos en esta categoría para la semana procesada.
                     </div>
                   ) : (
-                    /* Vista previa del correo */
                     <div style={{ borderRadius:10, overflow:'hidden', border:`1px solid ${borderHeader}` }}>
-                      {/* Banner de color */}
                       <div style={{ background:`linear-gradient(135deg, ${color} 0%, ${colorLight} 100%)`, padding:'18px 22px' }}>
                         <div style={{ fontSize:22, marginBottom:4 }}>{emoji}</div>
                         <div style={{ fontSize:16, fontWeight:800, color:'#fff', letterSpacing:'.04em' }}>{titulo}</div>
@@ -850,12 +1182,42 @@ export default function App() {
                           Transportes Bello e Hijos Ltda. · Fecha de pago: <strong>{fechas.viernes}</strong>
                         </div>
                       </div>
-                      {/* Cuerpo */}
                       <div style={{ background:'#fff', padding:'20px 22px 4px' }}>
                         <p style={{ fontSize:13, color:'#333', margin:'0 0 6px' }}>Estimado Luis,</p>
                         <p style={{ fontSize:13, color:'#333', fontWeight:700, margin:'0 0 18px' }}>Favor revisar y dar V° B° para pago.</p>
                       </div>
-                      {/* Tabla */}
+                      {/* Comparativo compacto dentro de la vista previa */}
+                      <div style={{ padding:'0 22px 14px', background:'#fff' }}>
+                        <div style={{ background:'#F9FAFB', border:'1px solid #E5E7EB', borderRadius:8, padding:'10px 14px',
+                          display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+                          <div>
+                            <p style={{ fontSize:10, color:'#6B7280' }}>Esta semana</p>
+                            <p style={{ ...S.mono, fontWeight:700, fontSize:13, color, marginTop:2 }}>{fmtCLP(total)}</p>
+                          </div>
+                          <div>
+                            <p style={{ fontSize:10, color:'#6B7280' }}>Anterior</p>
+                            <p style={{ ...S.mono, fontSize:12, color:'#444', marginTop:2 }}>
+                              {prev ? fmtCLP(prev) : '—'}
+                              {vari !== null && (
+                                <span style={{ color: vari > 0 ? '#B91C1C' : '#047857', fontWeight:700, marginLeft:4 }}>
+                                  ({vari > 0 ? '▲' : '▼'}{Math.abs(vari).toFixed(0)}%)
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                          <div>
+                            <p style={{ fontSize:10, color:'#6B7280' }}>Prom. 4 sem</p>
+                            <p style={{ ...S.mono, fontSize:12, color:'#444', marginTop:2 }}>
+                              {avg > 0 ? fmtCLP(avg) : '—'}
+                              {variAvg !== null && (
+                                <span style={{ color: variAvg > 0 ? '#B91C1C' : '#047857', fontWeight:700, marginLeft:4 }}>
+                                  ({variAvg > 0 ? '▲' : '▼'}{Math.abs(variAvg).toFixed(0)}%)
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
                       <div style={{ padding:'0 22px 22px', background:'#fff' }}>
                         <table style={{ width:'100%', borderCollapse:'collapse', borderRadius:8, overflow:'hidden', border:'1px solid #E0E0D8', fontSize:12 }}>
                           <thead>
@@ -914,7 +1276,6 @@ export default function App() {
                           </tfoot>
                         </table>
                       </div>
-                      {/* Footer */}
                       <div style={{ background:'#FAFAF7', borderTop:`1px solid ${borderHeader}`, padding:'10px 22px', textAlign:'center' }}>
                         <span style={{ fontSize:10, color:'#aaa' }}>Sistema Nómina Semanal · Transportes Bello e Hijos Ltda.</span>
                       </div>
@@ -927,7 +1288,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ═══ TAB 4: BÚSQUEDA HISTÓRICA ═══ */}
+        {/* ═══ TAB: BÚSQUEDA HISTÓRICA ═══ */}
         {tab === "buscar" && (
           <div className="fade-in">
             <div style={S.card}>
@@ -994,7 +1355,7 @@ export default function App() {
 
       </main>
 
-      {/* ═══ PRINT VIEW — PORTRAIT ═══ */}
+      {/* ═══ PRINT VIEW ═══ */}
       {nominaRows.length > 0 && (
         <div className="print-only" style={{ padding:'0 2mm' }}>
           <div style={{ borderBottom:'3px solid #0D3B2E', paddingBottom:10, marginBottom:12 }}>
@@ -1003,7 +1364,9 @@ export default function App() {
                 <h1 style={{ fontSize:20, fontWeight:800, color:'#0D3B2E', letterSpacing:'.08em', margin:0 }}>
                   NÓMINA SEMANAL
                 </h1>
-                <p style={{ fontSize:10, color:'#555', margin:'3px 0 0' }}>Transportes Bello e Hijos Ltda. · RUT 88.397.100-0</p>
+                <p style={{ fontSize:10, color:'#555', margin:'3px 0 0' }}>
+                  Transportes Bello e Hijos Ltda. · RUT 88.397.100-0 · Aprobador: <strong>{aprobador}</strong>
+                </p>
               </div>
               <div style={{ textAlign:'right' }}>
                 <p style={{ fontSize:16, fontWeight:800, color:'#0D3B2E', margin:0 }}>
@@ -1085,7 +1448,7 @@ export default function App() {
           <div style={{ marginTop:30, paddingTop:10 }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end' }}>
               <p style={{ fontSize:7.5, color:'#aaa', margin:0 }}>
-                Generado: {new Date().toLocaleDateString('es-CL')} · Transportes Bello e Hijos Ltda.
+                Generado: {new Date().toLocaleDateString('es-CL')} · Aprobador: {aprobador} · Transportes Bello e Hijos Ltda.
               </p>
               <div style={{ textAlign:'center' }}>
                 <div style={{ borderBottom:'1px solid #444', width:220, height:30 }}></div>
