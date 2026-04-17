@@ -32,9 +32,29 @@ export default function App() {
           fetch(HISTORICO_URL).then(r => r.text()),
           fetch(AUTORIZADORES_URL).then(r => r.text())
         ]);
-        const hParsed = Papa.parse(hText, { header:true, skipEmptyLines:true });
+
+        // Parseo robusto: normaliza headers (quita BOM/espacios) y valores (trim)
+        const hParsed = Papa.parse(hText, {
+          header: true,
+          skipEmptyLines: true,
+          transformHeader: h => (h || '').replace(/^\uFEFF/, '').trim(),
+          transform: v => (typeof v === 'string' ? v.trim() : v),
+        });
         setHistorico(hParsed.data || []);
-        const aParsed = Papa.parse(aText, { header:true, skipEmptyLines:true });
+        if (hParsed.data?.[0]) {
+          console.log('[Histórico] Headers detectados:', Object.keys(hParsed.data[0]));
+          console.log('[Histórico] Primera fila:', hParsed.data[0]);
+          console.log('[Histórico] Total filas:', hParsed.data.length);
+        } else {
+          console.warn('[Histórico] No se cargaron filas');
+        }
+
+        const aParsed = Papa.parse(aText, {
+          header: true,
+          skipEmptyLines: true,
+          transformHeader: h => (h || '').replace(/^\uFEFF/, '').trim(),
+          transform: v => (typeof v === 'string' ? v.trim() : v),
+        });
         const map = {};
         (aParsed.data || []).forEach(r => {
           if(r.DETALLE) map[r.DETALLE] = {
@@ -425,18 +445,38 @@ export default function App() {
   }, [nominaRows, historico, fechas.viernes]);
 
   // ─── SEARCH ────────────────────────────────────────────────────────
+  // Búsqueda robusta: concatena TODOS los valores de cada fila para no depender
+  // de nombres exactos de columnas (en caso de BOM, espacios, o headers distintos)
   const doSearch = useCallback(() => {
     if(!searchQuery.trim()) { setSearchResults([]); return; }
     const q = searchQuery.trim().toLowerCase();
     const results = historico.filter(r => {
-      const doc = (r.N_DOCUMENTO || '').toString().trim();
-      const rut = (r.RUT || '').toString().trim().toLowerCase();
-      const det = (r.DETALLE || '').toString().trim().toLowerCase();
-      const fecha = (r.FECHA_PAGO || '').toString().trim();
-      return doc.includes(q) || rut.includes(q) || det.includes(q) || fecha.includes(q);
+      if(!r || typeof r !== 'object') return false;
+      const haystack = Object.values(r)
+        .map(v => (v == null ? '' : v.toString()))
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(q);
     }).slice(0, 200);
     setSearchResults(results);
+    console.log(`[Búsqueda] "${searchQuery}" → ${results.length} resultados`);
   }, [searchQuery, historico]);
+
+  // Helper para acceder de forma tolerante a un campo que puede tener
+  // varios nombres posibles (ej: FECHA_PAGO vs Fecha_Pago vs fecha_pago)
+  const getField = (row, ...candidates) => {
+    if(!row) return '';
+    for(const c of candidates) {
+      if(row[c] !== undefined && row[c] !== null && row[c] !== '') return row[c];
+    }
+    // fallback: busca case-insensitive
+    const keys = Object.keys(row);
+    for(const c of candidates) {
+      const found = keys.find(k => k.toUpperCase() === c.toUpperCase());
+      if(found && row[found] !== undefined && row[found] !== null && row[found] !== '') return row[found];
+    }
+    return '';
+  };
 
   const downloadExcel = () => {
     const header = ['FECHA_PAGO','N_DOCUMENTO','RUT','DETALLE','MONTO','CUOTAS','AUTORIZADOR'];
@@ -1279,7 +1319,7 @@ export default function App() {
               <div style={{ display:'flex', gap:10 }}>
                 <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && doSearch()}
-                  placeholder="Buscar por Nº documento, RUT o proveedor…" style={{ ...S.input, flex:1 }}/>
+                  placeholder="Buscar por Nº documento, RUT, proveedor o fecha…" style={{ ...S.input, flex:1 }}/>
                 <button onClick={doSearch}
                   style={{ padding:'8px 24px', borderRadius:8, background:'#1D9E75', color:'#fff',
                     fontWeight:600, fontSize:13, border:'none', cursor:'pointer' }}>Buscar</button>
@@ -1287,7 +1327,7 @@ export default function App() {
               {loadingSheets && <p className="pulse" style={{ fontSize:11, color:'#aaa', marginTop:8 }}>Cargando datos…</p>}
               {!loadingSheets && historico.length > 0 && (
                 <p style={{ fontSize:10, color:'#bbb', marginTop:6 }}>
-                  {historico.length.toLocaleString('de-DE')} registros cargados · {historico[0]?.FECHA_PAGO} a {historico[historico.length-1]?.FECHA_PAGO}
+                  {historico.length.toLocaleString('de-DE')} registros cargados · {getField(historico[0], 'FECHA_PAGO')} a {getField(historico[historico.length-1], 'FECHA_PAGO')}
                 </p>
               )}
             </div>
@@ -1308,19 +1348,22 @@ export default function App() {
                     <tbody>
                       {searchResults.map((r, i) => (
                         <tr key={i} style={{ borderBottom:'1px solid #f0f0ec', background: i % 2 ? '#FAFAF7' : '#fff' }}>
-                          <td style={{ padding:'5px 10px', fontSize:11 }}>{r.FECHA_PAGO}</td>
-                          <td style={{ padding:'5px 10px', fontSize:11, ...S.mono }}>{r.N_DOCUMENTO}</td>
-                          <td style={{ padding:'5px 10px', fontSize:11, ...S.mono, color:'#888' }}>{r.RUT}</td>
-                          <td style={{ padding:'5px 10px', fontSize:11 }}>{r.DETALLE}</td>
+                          <td style={{ padding:'5px 10px', fontSize:11 }}>{getField(r, 'FECHA_PAGO', 'Fecha_Pago', 'fecha_pago', 'FECHA')}</td>
+                          <td style={{ padding:'5px 10px', fontSize:11, ...S.mono }}>{getField(r, 'N_DOCUMENTO', 'N_Documento', 'N° DOCUMENTO', 'N DOCUMENTO')}</td>
+                          <td style={{ padding:'5px 10px', fontSize:11, ...S.mono, color:'#888' }}>{getField(r, 'RUT', 'Rut')}</td>
+                          <td style={{ padding:'5px 10px', fontSize:11 }}>{getField(r, 'DETALLE', 'Detalle')}</td>
                           <td style={{ padding:'5px 10px', fontSize:11, textAlign:'right', fontWeight:600, ...S.mono }}>
-                            {fmtCLP(parseMonto(r.MONTO))}
+                            {fmtCLP(parseMonto(getField(r, 'MONTO', 'Monto')))}
                           </td>
                           <td style={{ padding:'5px 10px', fontSize:11, textAlign:'center' }}>
-                            {r.CUOTAS && r.CUOTAS !== 'nan' && (
-                              <span style={{ background:'#DBEAFE', color:'#1D4ED8', padding:'2px 6px', borderRadius:99, fontSize:9 }}>{r.CUOTAS}</span>
-                            )}
+                            {(() => {
+                              const c = getField(r, 'CUOTAS', 'Cuotas');
+                              return c && c !== 'nan' ? (
+                                <span style={{ background:'#DBEAFE', color:'#1D4ED8', padding:'2px 6px', borderRadius:99, fontSize:9 }}>{c}</span>
+                              ) : null;
+                            })()}
                           </td>
-                          <td style={{ padding:'5px 10px', fontSize:11, textAlign:'center', fontWeight:700 }}>{r.AUTORIZADOR}</td>
+                          <td style={{ padding:'5px 10px', fontSize:11, textAlign:'center', fontWeight:700 }}>{getField(r, 'AUTORIZADOR', 'Autorizador')}</td>
                         </tr>
                       ))}
                     </tbody>
