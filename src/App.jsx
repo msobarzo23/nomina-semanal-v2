@@ -63,7 +63,10 @@ export default function App() {
           };
         });
         setAuthMap(map);
-      } catch(e) { console.error("Error cargando Google Sheets:", e); }
+      } catch(e) {
+        console.error("Error cargando Google Sheets:", e);
+        showToast("⚠️ No se pudieron cargar los datos históricos. Verifica tu conexión.");
+      }
       setLoadingSheets(false);
       // Cargar listado de nóminas guardadas (en paralelo, no bloquea)
       fetchNominasGuardadas();
@@ -194,14 +197,28 @@ export default function App() {
 
   // ─── FILE READING ──────────────────────────────────────────────────
   const handleFile = (file, key) => {
+    if(!file.name.match(/\.(xlsx|xls)$/i)) {
+      showToast("❌ Solo se aceptan archivos Excel (.xlsx o .xls)");
+      return;
+    }
+    if(file.size > 20 * 1024 * 1024) {
+      showToast("❌ El archivo excede 20 MB");
+      return;
+    }
     setFileNames(p => ({ ...p, [key]: file.name }));
     const reader = new FileReader();
+    reader.onerror = () => showToast("❌ No se pudo leer el archivo");
     reader.onload = e => {
-      const wb = XLSX.read(e.target.result, { type:'array', raw:true });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const raw = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:null });
-      if(key === 'nomina') setDataNomina(raw);
-      else setDataCopec(raw);
+      try {
+        const wb = XLSX.read(e.target.result, { type:'array', raw:true });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:null });
+        if(key === 'nomina') setDataNomina(raw);
+        else setDataCopec(raw);
+      } catch {
+        showToast("❌ El archivo no es un Excel válido");
+        setFileNames(p => ({ ...p, [key]: '' }));
+      }
     };
     reader.readAsArrayBuffer(file);
   };
@@ -499,6 +516,8 @@ export default function App() {
     );
     navigator.clipboard.writeText(lines.join('\n')).then(() => {
       showToast("✓ Copiado — pega en Google Sheets (Ctrl+V)");
+    }).catch(() => {
+      showToast("❌ No se pudo copiar al portapapeles");
     });
   };
 
@@ -791,8 +810,8 @@ export default function App() {
                       <div style={{ textAlign:'right' }}>
                         <p style={{ fontSize:11, color:'#666' }}>Esta semana vs promedio</p>
                         <p style={{ fontSize:18, fontWeight:800, marginTop:2, ...S.mono,
-                          color: stats.varVsAvg > 5 ? '#DC2626' : stats.varVsAvg < -5 ? '#059669' : '#333' }}>
-                          {stats.varVsAvg > 0 ? '+' : ''}{stats.varVsAvg?.toFixed(1)}%
+                          color: stats.varVsAvg != null ? (stats.varVsAvg > 5 ? '#DC2626' : stats.varVsAvg < -5 ? '#059669' : '#333') : '#333' }}>
+                          {stats.varVsAvg != null ? `${stats.varVsAvg > 0 ? '+' : ''}${stats.varVsAvg.toFixed(1)}%` : '—'}
                         </p>
                       </div>
                     </div>
@@ -1427,12 +1446,14 @@ export default function App() {
                 {stats.varCombustible > 0 ? '▲' : '▼'} {Math.abs(stats.varCombustible).toFixed(1)}% vs semana anterior</p>}
             </div>
             {stats.avg4Total > 0 && (
-              <div style={{ background: Math.abs(stats.varVsAvg) > 10 ? '#FFF7ED' : '#F5F5F0', borderRadius:5, padding:'8px 10px',
-                border: `1px solid ${Math.abs(stats.varVsAvg) > 10 ? '#FED7AA' : '#E0E0D8'}` }}>
+              <div style={{ background: stats.varVsAvg != null && Math.abs(stats.varVsAvg) > 10 ? '#FFF7ED' : '#F5F5F0', borderRadius:5, padding:'8px 10px',
+                border: `1px solid ${stats.varVsAvg != null && Math.abs(stats.varVsAvg) > 10 ? '#FED7AA' : '#E0E0D8'}` }}>
                 <p style={{ fontSize:8, color:'#555', fontWeight:700, margin:0, textTransform:'uppercase', letterSpacing:'.04em' }}>Promedio 4 semanas</p>
                 <p style={{ fontSize:16, fontWeight:700, color:'#222', margin:'3px 0 0', fontFamily:"'DM Mono',monospace" }}>{fmtCLP(stats.avg4Total)}</p>
-                <p style={{ fontSize:8, margin:'2px 0 0', fontWeight:700, color: stats.varVsAvg > 5 ? '#B91C1C' : stats.varVsAvg < -5 ? '#047857' : '#555' }}>
-                  {stats.varVsAvg > 0 ? '+' : ''}{stats.varVsAvg?.toFixed(1)}% esta semana vs promedio</p>
+                {stats.varVsAvg != null && (
+                  <p style={{ fontSize:8, margin:'2px 0 0', fontWeight:700, color: stats.varVsAvg > 5 ? '#B91C1C' : stats.varVsAvg < -5 ? '#047857' : '#555' }}>
+                    {stats.varVsAvg > 0 ? '+' : ''}{stats.varVsAvg.toFixed(1)}% esta semana vs promedio</p>
+                )}
               </div>
             )}
           </div>
