@@ -27,3 +27,38 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
   .print-only{display:block!important}
 }
 .print-only{display:none}
+
+/* Mobile (< 720px) */
+@media (max-width:720px){
+  /* Stat grid de 4 columnas → 2 columnas */
+  main > div > div[style*="grid-template-columns"][style*="repeat(4"]{
+    grid-template-columns:repeat(2,1fr)!important;
+  }
+  /* Stat grid de 3 columnas → 1 columna */
+  main > div > div > div[style*="grid-template-columns"][style*="repeat(3"]{
+    grid-template-columns:1fr!important;
+  }
+  /* Tabs scrollable horizontal */
+  nav > div{padding-bottom:2px}
+  /* Reduce padding general en cards */
+  body{font-size:13px}
+  /* Header tighter */
+  header{padding:10px 14px!important}
+  header h1{font-size:15px!important}
+  /* Tablas más compactas */
+  table{font-size:11px}
+  table th,table td{padding:5px 6px!important}
+  /* Campos de fecha apilados en filtros */
+  input[type="date"]{min-width:130px}
+}
+
+/* Phone (< 480px) */
+@media (max-width:480px){
+  main > div > div[style*="grid-template-columns"][style*="repeat(4"]{
+    grid-template-columns:1fr 1fr!important;
+  }
+  /* Headers de tabla pueden ocupar menos espacio */
+  table th{font-size:9px!important;letter-spacing:0!important}
+  /* Filtros wrap */
+  body{font-size:12px}
+}

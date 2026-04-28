@@ -7,6 +7,10 @@ import DropZone from './components/DropZone.jsx';
 import Stat from './components/Stat.jsx';
 import TabAnteriores from './components/TabAnteriores.jsx';
 import TabBuscar from './components/TabBuscar.jsx';
+import TabComparar from './components/TabComparar.jsx';
+import TrendChart from './components/TrendChart.jsx';
+import ProveedorDetalle from './components/ProveedorDetalle.jsx';
+import SettingsDrawer, { DEFAULT_EMAIL_CONFIG } from './components/SettingsDrawer.jsx';
 
 export default function App() {
   const [tab, setTab] = useState("carga");
@@ -29,6 +33,16 @@ export default function App() {
   const [revFilters, setRevFilters] = useState({ search:'', auth:new Set(), ncOnly:false });
   const [revSort, setRevSort] = useState({ field:null, dir:'asc' });
   const [selectedIds, setSelectedIds] = useState(new Set());
+  // UI extra
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [selectedProveedor, setSelectedProveedor] = useState(null);
+  const [emailConfig, setEmailConfig] = useState(() => {
+    try {
+      const s = localStorage.getItem('emailConfig');
+      if(s) return { ...DEFAULT_EMAIL_CONFIG, ...JSON.parse(s) };
+    } catch(e) {}
+    return DEFAULT_EMAIL_CONFIG;
+  });
 
   // ─── LOAD GOOGLE SHEETS ON MOUNT ───────────────────────────────────
   useEffect(() => {
@@ -114,6 +128,11 @@ export default function App() {
       }));
     } catch(e) { /* localStorage lleno o bloqueado — ignorar */ }
   }, [nominaRows, fechas, loadedFromSheet]);
+
+  // Persiste configuracion de plantilla de correo
+  useEffect(() => {
+    try { localStorage.setItem('emailConfig', JSON.stringify(emailConfig)); } catch(e) {}
+  }, [emailConfig]);
 
   // ─── APPS SCRIPT: LIST ─────────────────────────────────────────────
   const fetchNominasGuardadas = useCallback(async () => {
@@ -517,6 +536,25 @@ export default function App() {
              avg4Total, varVsAvg, alerts, sortedWeeks };
   }, [nominaRows, historico, fechas.viernes]);
 
+  // ─── CHART DATA (ultimas 12 semanas con desglose) ──────────────────
+  const chartData = useMemo(() => {
+    if(!historico || historico.length === 0) return [];
+    const semanas = {};
+    historico.forEach(h => {
+      if(!h.FECHA_PAGO) return;
+      const f = h.FECHA_PAGO;
+      if(!semanas[f]) semanas[f] = { fecha:f, total:0, petroleo:0, lubricantes:0, neumaticos:0, otros:0 };
+      const m = parseMonto(h.MONTO);
+      const det = (h.DETALLE || '').toUpperCase();
+      semanas[f].total += m;
+      if(det.includes('LUBRICANTES')) semanas[f].lubricantes += m;
+      else if(det.includes('COPEC S A') || det.includes('ESMAX DISTRIBUCION SPA')) semanas[f].petroleo += m;
+      else if(h.AUTORIZADOR === 'LBS') semanas[f].neumaticos += m;
+      else semanas[f].otros += m;
+    });
+    return Object.values(semanas).sort((a,b) => a.fecha.localeCompare(b.fecha)).slice(-12);
+  }, [historico]);
+
   // ─── CORREO LBS ────────────────────────────────────────────────────
   const esPetroleo    = (detalle) => detalle.toUpperCase().includes('COPEC S A') && !detalle.toUpperCase().includes('LUBRICANTES');
   const esLubricante  = (detalle) => detalle.toUpperCase().includes('LUBRICANTES');
@@ -648,6 +686,7 @@ export default function App() {
     { id:"anterior", label:"④ Anteriores",  icon:"📂" },
     { id:"buscar",   label:"⑤ Histórico",   icon:"🔍" },
     { id:"correo",   label:"⑥ Correo LBS",  icon:"✉️" },
+    { id:"comparar", label:"⑦ Comparar",    icon:"⚖️" },
   ];
 
   return (
@@ -658,7 +697,7 @@ export default function App() {
         <div style={S.headerInner}>
           <div>
             <h1 style={{ ...S.mono, fontSize:18, fontWeight:700, letterSpacing:'-.02em', margin:0 }}>NÓMINA SEMANAL</h1>
-            <p style={{ fontSize:12, opacity:.7, marginTop:2 }}>Transportes Bello e Hijos Ltda.</p>
+            <p style={{ fontSize:12, opacity:.7, marginTop:2 }}>{emailConfig.empresa}</p>
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
             <div style={{ textAlign:'right' }}>
@@ -668,6 +707,11 @@ export default function App() {
                     {historico.length.toLocaleString('de-DE')} registros · {nominasGuardadas.length} nóminas guardadas
                   </span>}
             </div>
+            <button onClick={() => setSettingsOpen(true)} title="Plantilla de correo"
+              style={{ background:'rgba(255,255,255,.15)', border:'1px solid rgba(255,255,255,.25)',
+                color:'#fff', borderRadius:8, padding:'6px 10px', fontSize:13, cursor:'pointer' }}>
+              ⚙️
+            </button>
           </div>
         </div>
       </header>
@@ -1019,12 +1063,29 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                {chartData.length >= 2 && (
+                  <div style={{ marginTop:20 }}>
+                    <div style={S.sectionTitle}>Tendencia últimas {chartData.length} semanas</div>
+                    <TrendChart data={chartData}
+                      lines={[
+                        { key:'total',       label:'Total',       color:'#0D3B2E' },
+                        { key:'petroleo',    label:'Petróleo',    color:'#14614B' },
+                        { key:'lubricantes', label:'Lubricantes', color:'#65A30D' },
+                        { key:'neumaticos',  label:'Neumáticos',  color:'#1D4ED8' },
+                      ]}/>
+                  </div>
+                )}
                 <div style={{ ...S.sectionTitle, marginTop:20 }}>Principales proveedores de la semana</div>
+                <p style={{ fontSize:10, color:'#aaa', marginTop:-8, marginBottom:8 }}>Click para ver historial completo</p>
                 <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
                   {stats.top5.map(([prov, total], i) => {
                     const pct = stats.proveedorTotal > 0 ? (total / stats.proveedorTotal) * 100 : 0;
                     return (
-                      <div key={prov} style={{ display:'flex', alignItems:'center', gap:10 }}>
+                      <div key={prov} onClick={() => setSelectedProveedor(prov)}
+                        style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer', padding:'4px 6px',
+                          borderRadius:6, transition:'background .15s' }}
+                        onMouseEnter={e => e.currentTarget.style.background='#F5F5F0'}
+                        onMouseLeave={e => e.currentTarget.style.background='transparent'}>
                         <span style={{ fontSize:11, color:'#aaa', width:16, textAlign:'right' }}>{i + 1}</span>
                         <div style={{ flex:1 }}>
                           <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
@@ -1243,13 +1304,13 @@ export default function App() {
                         <tr><td style="padding:24px 28px;">
                           <p style="margin:0;font-size:26px;line-height:1;">${emoji}</p>
                           <p style="margin:6px 0 0;font-size:20px;font-weight:800;color:#fff;letter-spacing:.04em;">${titulo}</p>
-                          <p style="margin:4px 0 0;font-size:12px;color:rgba(255,255,255,.75);">Transportes Bello e Hijos Ltda. &nbsp;·&nbsp; Fecha de pago: <strong>${fechas.viernes}</strong></p>
+                          <p style="margin:4px 0 0;font-size:12px;color:rgba(255,255,255,.75);">${escapeHtml(emailConfig.empresa)} &nbsp;·&nbsp; Fecha de pago: <strong>${fechas.viernes}</strong></p>
                         </td></tr>
                       </table>
                       <table width="100%" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:0 0 12px 12px;border:1px solid #E0E0D8;border-top:none;">
                         <tr><td style="padding:24px 28px 8px;">
-                          <p style="margin:0;font-size:14px;color:#333;">Estimado Luis,</p>
-                          <p style="margin:8px 0 0;font-size:14px;color:#333;font-weight:700;">Favor revisar y dar V° B° para pago.</p>
+                          <p style="margin:0;font-size:14px;color:#333;">${escapeHtml(emailConfig.saludo)}</p>
+                          <p style="margin:8px 0 0;font-size:14px;color:#333;font-weight:700;">${escapeHtml(emailConfig.cuerpo)}</p>
                         </td></tr>
                         ${alertHTML}
                         ${cmpHTML}
@@ -1280,7 +1341,7 @@ export default function App() {
                           </table>
                         </td></tr>
                       </table>
-                      <p style="text-align:center;font-size:11px;color:#aaa;margin:12px 0 0;">Generado por Sistema Nómina Semanal · Transportes Bello e Hijos Ltda.</p>
+                      <p style="text-align:center;font-size:11px;color:#aaa;margin:12px 0 0;">${escapeHtml(emailConfig.pie)}</p>
                     </td></tr>
                   </table></body></html>`;
                 };
@@ -1332,7 +1393,7 @@ export default function App() {
                               return base.join('\t');
                             });
                             navigator.clipboard.writeText(
-                              [`Estimado Luis,`, ``, `Favor revisar y dar Vº Bº para pago.`, ``, subtitulo, ...filas,
+                              [emailConfig.saludo, ``, emailConfig.cuerpo, ``, subtitulo, ...filas,
                                `TOTAL\t\t${total.toLocaleString('de-DE')}`].join('\n')
                             ).then(() => showToast(`✓ Correo ${titulo} copiado`));
                           }
@@ -1367,12 +1428,12 @@ export default function App() {
                         <div style={{ fontSize:22, marginBottom:4 }}>{emoji}</div>
                         <div style={{ fontSize:16, fontWeight:800, color:'#fff', letterSpacing:'.04em' }}>{titulo}</div>
                         <div style={{ fontSize:11, color:'rgba(255,255,255,.75)', marginTop:3 }}>
-                          Transportes Bello e Hijos Ltda. · Fecha de pago: <strong>{fechas.viernes}</strong>
+                          {emailConfig.empresa} · Fecha de pago: <strong>{fechas.viernes}</strong>
                         </div>
                       </div>
                       <div style={{ background:'#fff', padding:'20px 22px 4px' }}>
-                        <p style={{ fontSize:13, color:'#333', margin:'0 0 6px' }}>Estimado Luis,</p>
-                        <p style={{ fontSize:13, color:'#333', fontWeight:700, margin:'0 0 18px' }}>Favor revisar y dar V° B° para pago.</p>
+                        <p style={{ fontSize:13, color:'#333', margin:'0 0 6px' }}>{emailConfig.saludo}</p>
+                        <p style={{ fontSize:13, color:'#333', fontWeight:700, margin:'0 0 18px' }}>{emailConfig.cuerpo}</p>
                       </div>
                       {/* Comparativo compacto dentro de la vista previa */}
                       <div style={{ padding:'0 22px 14px', background:'#fff' }}>
@@ -1467,7 +1528,7 @@ export default function App() {
                         </table>
                       </div>
                       <div style={{ background:'#FAFAF7', borderTop:`1px solid ${borderHeader}`, padding:'10px 22px', textAlign:'center' }}>
-                        <span style={{ fontSize:10, color:'#aaa' }}>Sistema Nómina Semanal · Transportes Bello e Hijos Ltda.</span>
+                        <span style={{ fontSize:10, color:'#aaa' }}>{emailConfig.pie}</span>
                       </div>
                     </div>
                   )}
@@ -1483,7 +1544,20 @@ export default function App() {
           <TabBuscar historico={historico} loadingSheets={loadingSheets} S={S}/>
         )}
 
+        {/* ═══ TAB: COMPARAR DOS NÓMINAS ═══ */}
+        {tab === "comparar" && (
+          <TabComparar nominasGuardadas={nominasGuardadas} S={S}/>
+        )}
+
       </main>
+
+      {/* ═══ MODALES ═══ */}
+      <SettingsDrawer open={settingsOpen} config={emailConfig}
+        setConfig={setEmailConfig} onClose={() => setSettingsOpen(false)}/>
+      {selectedProveedor && (
+        <ProveedorDetalle proveedor={selectedProveedor} historico={historico}
+          onClose={() => setSelectedProveedor(null)}/>
+      )}
 
       {/* ═══ PRINT VIEW ═══ */}
       {nominaRows.length > 0 && (
@@ -1495,7 +1569,7 @@ export default function App() {
                   NÓMINA SEMANAL
                 </h1>
                 <p style={{ fontSize:10, color:'#555', margin:'3px 0 0' }}>
-                  Transportes Bello e Hijos Ltda. · RUT 88.397.100-0
+                  {emailConfig.empresa} · RUT {emailConfig.rut}
                 </p>
               </div>
               <div style={{ textAlign:'right' }}>
@@ -1580,7 +1654,7 @@ export default function App() {
           <div style={{ marginTop:30, paddingTop:10 }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end' }}>
               <p style={{ fontSize:7.5, color:'#aaa', margin:0 }}>
-                Generado: {new Date().toLocaleDateString('es-CL')} · Transportes Bello e Hijos Ltda.
+                Generado: {new Date().toLocaleDateString('es-CL')} · {emailConfig.empresa}
               </p>
               <div style={{ textAlign:'center' }}>
                 <div style={{ borderBottom:'1px solid #444', width:220, height:30 }}></div>
