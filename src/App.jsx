@@ -1169,35 +1169,54 @@ export default function App() {
                         {rows.length} doc{rows.length !== 1 ? 's' : ''} · {fmtCLP(total)}
                       </span>
                     </div>
-                    <button
-                      onClick={() => {
-                        const html = buildHTML();
-                        try {
-                          const blob = new Blob([html], { type: 'text/html' });
-                          const data = new ClipboardItem({ 'text/html': blob });
-                          navigator.clipboard.write([data]).then(() =>
-                            showToast(`✓ Correo ${titulo} copiado — pega directo en Outlook o Gmail`)
+                    <div style={{ display:'flex', gap:8 }}>
+                      <button
+                        onClick={() => {
+                          const html = buildHTML().replace(
+                            '</body>',
+                            '<script>window.onload=function(){window.focus();window.print();};<\/script></body>'
                           );
-                        } catch {
-                          const filas = rows.map(r => {
-                            const base = [r.nDoc, fechas.viernes];
-                            if(showProveedor) base.push(r.detalle);
-                            base.push(r.monto.toLocaleString('de-DE'));
-                            if(showCuotas) base.push(r.cuotas || '');
-                            return base.join('\t');
-                          });
-                          navigator.clipboard.writeText(
-                            [`Estimado Luis,`, ``, `Favor revisar y dar Vº Bº para pago.`, ``, subtitulo, ...filas,
-                             `TOTAL\t\t${total.toLocaleString('de-DE')}`].join('\n')
-                          ).then(() => showToast(`✓ Correo ${titulo} copiado`));
-                        }
-                      }}
-                      style={{ padding:'9px 22px', borderRadius:8, background:color, color:'#fff',
-                        fontWeight:700, fontSize:12, border:'none', cursor:'pointer',
-                        display:'flex', alignItems:'center', gap:6,
-                        boxShadow:`0 3px 10px ${color}55` }}>
-                      📋 Copiar correo
-                    </button>
+                          const w = window.open('', '_blank', 'width=800,height=900');
+                          if(!w) { showToast('⚠️ Permite ventanas emergentes para imprimir'); return; }
+                          w.document.open();
+                          w.document.write(html);
+                          w.document.close();
+                        }}
+                        style={{ padding:'9px 18px', borderRadius:8, background:'#fff', color,
+                          fontWeight:700, fontSize:12, border:`2px solid ${color}`, cursor:'pointer',
+                          display:'flex', alignItems:'center', gap:6 }}>
+                        🖨 Imprimir
+                      </button>
+                      <button
+                        onClick={() => {
+                          const html = buildHTML();
+                          try {
+                            const blob = new Blob([html], { type: 'text/html' });
+                            const data = new ClipboardItem({ 'text/html': blob });
+                            navigator.clipboard.write([data]).then(() =>
+                              showToast(`✓ Correo ${titulo} copiado — pega directo en Outlook o Gmail`)
+                            );
+                          } catch {
+                            const filas = rows.map(r => {
+                              const base = [r.nDoc, fechas.viernes];
+                              if(showProveedor) base.push(r.detalle);
+                              base.push(r.monto.toLocaleString('de-DE'));
+                              if(showCuotas) base.push(r.cuotas || '');
+                              return base.join('\t');
+                            });
+                            navigator.clipboard.writeText(
+                              [`Estimado Luis,`, ``, `Favor revisar y dar Vº Bº para pago.`, ``, subtitulo, ...filas,
+                               `TOTAL\t\t${total.toLocaleString('de-DE')}`].join('\n')
+                            ).then(() => showToast(`✓ Correo ${titulo} copiado`));
+                          }
+                        }}
+                        style={{ padding:'9px 22px', borderRadius:8, background:color, color:'#fff',
+                          fontWeight:700, fontSize:12, border:'none', cursor:'pointer',
+                          display:'flex', alignItems:'center', gap:6,
+                          boxShadow:`0 3px 10px ${color}55` }}>
+                        📋 Copiar correo
+                      </button>
+                    </div>
                   </div>
 
                   {/* Alerta en la vista previa */}
