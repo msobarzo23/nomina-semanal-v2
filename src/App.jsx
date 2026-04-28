@@ -74,6 +74,41 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ─── AUTOGUARDADO LOCAL (borrador) ─────────────────────────────────
+  // Restaura el último borrador al montar
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('nominaDraft');
+      if(!saved) return;
+      const { rows, fechas: f, loadedFromSheet: lfs, timestamp } = JSON.parse(saved);
+      if(rows && rows.length > 0 && f) {
+        setNominaRows(rows);
+        setFechas(f);
+        if(lfs) setLoadedFromSheet(lfs);
+        const ts = timestamp ? new Date(timestamp).toLocaleString('es-CL', { dateStyle:'short', timeStyle:'short' }) : '';
+        showToast(`✓ Borrador local restaurado${ts ? ` (${ts})` : ''}`);
+        setTab('revision');
+      }
+    } catch(e) { console.warn('Error restaurando borrador:', e); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persiste borrador en cada cambio
+  useEffect(() => {
+    try {
+      if(nominaRows.length === 0) {
+        localStorage.removeItem('nominaDraft');
+        return;
+      }
+      localStorage.setItem('nominaDraft', JSON.stringify({
+        rows: nominaRows,
+        fechas,
+        loadedFromSheet,
+        timestamp: Date.now(),
+      }));
+    } catch(e) { /* localStorage lleno o bloqueado — ignorar */ }
+  }, [nominaRows, fechas, loadedFromSheet]);
+
   // ─── APPS SCRIPT: LIST ─────────────────────────────────────────────
   const fetchNominasGuardadas = useCallback(async () => {
     if(!APPS_SCRIPT_URL || APPS_SCRIPT_URL.startsWith('PEGA_')) return;
@@ -134,6 +169,13 @@ export default function App() {
     }
     if(nominaRows.length === 0) { showToast("Sin datos para guardar"); return; }
 
+    // Confirmar si ya existe una nómina guardada para esta fecha de pago
+    const yaExiste = nominasGuardadas.some(n => n.FECHA_PAGO === fechas.viernes);
+    if(yaExiste) {
+      const ok = window.confirm(`Ya existe una nómina guardada para el ${fechas.viernes}.\n\n¿Sobrescribirla con los datos actuales?`);
+      if(!ok) return;
+    }
+
     // Calcular totales (reusa la lógica del memo, pero recalculo directo para no depender del render)
     const esCombustibleActual = (r) => {
       const d = r.detalle.toUpperCase();
@@ -193,7 +235,7 @@ export default function App() {
       showToast("❌ Error guardando nómina");
     }
     setSaving(false);
-  }, [nominaRows, fechas, fetchNominasGuardadas]);
+  }, [nominaRows, fechas, fetchNominasGuardadas, nominasGuardadas]);
 
   // ─── FILE READING ──────────────────────────────────────────────────
   const handleFile = (file, key) => {
@@ -270,7 +312,7 @@ export default function App() {
       const esCopec = fichaName.toUpperCase().includes('COPEC');
       const isCombustible = razon === 'COPEC S A' || razon === 'COPEC S A (NOTA DE CREDITO)' ||
                             razon === 'ESMAX DISTRIBUCION SPA' || razon === 'ESMAX DISTRIBUCION SPA (NOTA DE CREDITO)';
-      const saldo = parseFloat(row[col['Saldo ($)']]) || 0;
+      const saldo = parseMonto(row[col['Saldo ($)']]);
       const numDoc = normDoc(row[col['Número Doc.']]);
       const rut = row[col['ID Ficha']]?.toString() || '';
 
@@ -315,8 +357,42 @@ export default function App() {
     setTab("revision");
   }, [dataNomina, dataCopec, fechas, historico, authMap]);
 
+  // Recalcula las cuotas LBS para todas las filas (necesario cuando cambia un autorizador o detalle)
+  const recomputeCuotas = useCallback((rows) => {
+    const pagoISO = fechas.viernes;
+    const histDocCount = {};
+    historico.forEach(h => {
+      if(h.AUTORIZADOR === 'LBS' && !COPEC_EXCLUSIONS.has(h.DETALLE)) {
+        if(h.FECHA_PAGO && h.FECHA_PAGO >= pagoISO) return;
+        const key = `${h.N_DOCUMENTO}|||${h.DETALLE}`;
+        histDocCount[key] = (histDocCount[key] || 0) + 1;
+      }
+    });
+    const localDocCount = {};
+    return rows.map(r => {
+      if(r.autorizador !== 'LBS' || COPEC_EXCLUSIONS.has(r.detalle)) {
+        return r.cuotas ? { ...r, cuotas: '' } : r;
+      }
+      const docKey = `${r.nDoc}|||${r.detalle}`;
+      const histCount = histDocCount[docKey] || 0;
+      localDocCount[docKey] = (localDocCount[docKey] || 0) + 1;
+      const cuotaNum = histCount + localDocCount[docKey];
+      const totalCuotas = CUOTA_RULES[r.detalle] || authMap[r.detalle]?.cuotas || 0;
+      let cuotas = '';
+      if(totalCuotas > 0) cuotas = `${cuotaNum}/${totalCuotas}`;
+      else if(cuotaNum > 0) cuotas = `${cuotaNum}`;
+      return r.cuotas !== cuotas ? { ...r, cuotas } : r;
+    });
+  }, [historico, authMap, fechas.viernes]);
+
   const updateRow = (id, field, value) => {
-    setNominaRows(prev => prev.map(r => r.id === id ? { ...r, [field]: value } : r));
+    setNominaRows(prev => {
+      const updated = prev.map(r => r.id === id ? { ...r, [field]: value } : r);
+      if(field === 'autorizador' || field === 'detalle') {
+        return recomputeCuotas(updated);
+      }
+      return updated;
+    });
   };
 
   // ─── STATS ─────────────────────────────────────────────────────────
