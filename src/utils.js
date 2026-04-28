@@ -46,6 +46,21 @@ export const normDoc = v => {
   return v.toString().trim().replace(/\.0+$/, '');
 };
 
+// Reconstruye cuotas "X/Y" cuando Google Sheets las guardó como fecha (locale es-CL: DD/MM)
+export const parseCuotas = v => {
+  if(v == null || v === '') return '';
+  if(v instanceof Date && !isNaN(v.getTime())) return `${v.getDate()}/${v.getMonth()+1}`;
+  let s = v.toString().trim();
+  if(s.startsWith("'")) s = s.slice(1);
+  if(!s) return '';
+  if(/^\d+\/\d+$/.test(s)) return s;
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(iso) return `${parseInt(iso[3],10)}/${parseInt(iso[2],10)}`;
+  const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/\d{4}/);
+  if(dmy) return `${parseInt(dmy[1],10)}/${parseInt(dmy[2],10)}`;
+  return s;
+};
+
 // Parse MONTO robustly - Google Sheets Chilean format uses dots as thousand separators
 export const parseMonto = (v) => {
   if(!v || v === 'nan' || v === '') return 0;

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, CUOTA_RULES, AUTH_LIST } from './config.js';
-import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates, parseMonto } from './utils.js';
+import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates, parseMonto, parseCuotas } from './utils.js';
 
 export default function App() {
   const [tab, setTab] = useState("carga");
@@ -109,7 +109,7 @@ export default function App() {
         rut: String(d.RUT || ''),
         detalle: String(d.DETALLE || ''),
         monto: parseFloat(d.MONTO) || 0,
-        cuotas: String(d.CUOTAS || ''),
+        cuotas: parseCuotas(d.CUOTAS),
         autorizador: String(d.AUTORIZADOR || 'MBL'),
         isNC: d.IS_NC === true || d.IS_NC === 'true' || d.IS_NC === 'TRUE',
         esCopec: d.ES_COPEC === true || d.ES_COPEC === 'true' || d.ES_COPEC === 'TRUE',
@@ -164,7 +164,7 @@ export default function App() {
         RUT: r.rut,
         DETALLE: r.detalle,
         MONTO: r.monto,
-        CUOTAS: r.cuotas,
+        CUOTAS: r.cuotas ? `'${r.cuotas}` : '',
         AUTORIZADOR: r.autorizador,
         ES_COPEC: !!r.esCopec,
         ES_LUBRICANTE: r.detalle.toUpperCase().includes('LUBRICANTES'),
