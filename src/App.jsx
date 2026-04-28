@@ -1,8 +1,12 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, CUOTA_RULES, AUTH_LIST } from './config.js';
 import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates, parseMonto, parseCuotas, escapeHtml } from './utils.js';
+import DropZone from './components/DropZone.jsx';
+import Stat from './components/Stat.jsx';
+import TabAnteriores from './components/TabAnteriores.jsx';
+import TabBuscar from './components/TabBuscar.jsx';
 
 export default function App() {
   const [tab, setTab] = useState("carga");
@@ -14,8 +18,6 @@ export default function App() {
   const [historico, setHistorico] = useState([]);
   const [authMap, setAuthMap] = useState({});
   const [loadingSheets, setLoadingSheets] = useState(true);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState([]);
   const [toast, setToast] = useState("");
   const [processing, setProcessing] = useState(false);
   // Nuevos estados para persistencia
@@ -591,39 +593,6 @@ export default function App() {
              alerts };
   }, [nominaRows, historico, fechas.viernes]);
 
-  // ─── SEARCH ────────────────────────────────────────────────────────
-  // Búsqueda robusta: concatena TODOS los valores de cada fila para no depender
-  // de nombres exactos de columnas (en caso de BOM, espacios, o headers distintos)
-  const doSearch = useCallback(() => {
-    if(!searchQuery.trim()) { setSearchResults([]); return; }
-    const q = searchQuery.trim().toLowerCase();
-    const results = historico.filter(r => {
-      if(!r || typeof r !== 'object') return false;
-      const haystack = Object.values(r)
-        .map(v => (v == null ? '' : v.toString()))
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(q);
-    }).slice(0, 200);
-    setSearchResults(results);
-    console.log(`[Búsqueda] "${searchQuery}" → ${results.length} resultados`);
-  }, [searchQuery, historico]);
-
-  // Helper para acceder de forma tolerante a un campo que puede tener
-  // varios nombres posibles (ej: FECHA_PAGO vs Fecha_Pago vs fecha_pago)
-  const getField = (row, ...candidates) => {
-    if(!row) return '';
-    for(const c of candidates) {
-      if(row[c] !== undefined && row[c] !== null && row[c] !== '') return row[c];
-    }
-    // fallback: busca case-insensitive
-    const keys = Object.keys(row);
-    for(const c of candidates) {
-      const found = keys.find(k => k.toUpperCase() === c.toUpperCase());
-      if(found && row[found] !== undefined && row[found] !== null && row[found] !== '') return row[found];
-    }
-    return '';
-  };
 
   const downloadExcel = () => {
     const header = ['FECHA_PAGO','N_DOCUMENTO','RUT','DETALLE','MONTO','CUOTAS','AUTORIZADOR'];
@@ -1096,87 +1065,12 @@ export default function App() {
 
         {/* ═══ TAB 4: NÓMINAS ANTERIORES ═══ */}
         {tab === "anterior" && (
-          <div className="fade-in">
-            <div style={S.card}>
-              <div style={S.sectionTitle}>Cargar nómina por fecha</div>
-              <div style={{ display:'flex', gap:10, alignItems:'flex-end' }}>
-                <div style={{ flex:1 }}>
-                  <label style={S.fieldLabel}>Fecha de pago</label>
-                  <input type="date" value={fechas.viernes}
-                    onChange={e => setFechas(p => ({ ...p, viernes:e.target.value }))} style={S.input}/>
-                </div>
-                <button onClick={() => loadNominaFromSheet(fechas.viernes)} disabled={loadingNomina}
-                  style={{ padding:'10px 24px', background: loadingNomina ? '#bbb' : '#1D9E75', color:'#fff',
-                    border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor: loadingNomina ? 'default' : 'pointer' }}>
-                  {loadingNomina ? 'Cargando…' : 'Cargar →'}
-                </button>
-              </div>
-              {APPS_SCRIPT_URL.startsWith('PEGA_') && (
-                <p style={{ fontSize:11, color:'#DC2626', marginTop:8 }}>
-                  ⚠️ Apps Script no configurado. Sigue los pasos en README_SETUP.md
-                </p>
-              )}
-            </div>
-
-            {nominasGuardadas.length > 0 && (
-              <div style={{ ...S.card, padding:0, overflow:'hidden' }}>
-                <div style={{ padding:'12px 20px', borderBottom:'1px solid #E0E0D8', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                  <span style={S.sectionTitle}>Nóminas guardadas ({nominasGuardadas.length})</span>
-                  <button onClick={fetchNominasGuardadas}
-                    style={{ padding:'4px 10px', fontSize:10, background:'#F3F4F6', border:'1px solid #E5E7EB',
-                      borderRadius:6, cursor:'pointer', color:'#666', fontWeight:600 }}>
-                    🔄 Refrescar
-                  </button>
-                </div>
-                <div style={{ overflowX:'auto', maxHeight:'60vh', overflowY:'auto' }}>
-                  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-                    <thead style={{ position:'sticky', top:0, background:'#fff', zIndex:1 }}>
-                      <tr style={{ borderBottom:'2px solid #E0E0D8' }}>
-                        {['FECHA DE PAGO','SEMANA','TOTAL','DOCS','GUARDADA',''].map((h, i) => (
-                          <th key={i} style={{ padding:'10px', textAlign: i===2?'right':'left',
-                            fontSize:10, fontWeight:700, color:'#666', textTransform:'uppercase', letterSpacing:'.04em' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {nominasGuardadas.map((n, i) => (
-                        <tr key={i} style={{ borderBottom:'1px solid #f0f0ec',
-                          background: i % 2 ? '#FAFAF7' : '#fff' }}>
-                          <td style={{ padding:'10px', fontWeight:700, color:'#0D3B2E', ...S.mono }}>{n.FECHA_PAGO}</td>
-                          <td style={{ padding:'10px', color:'#888', fontSize:11 }}>
-                            {n.LUNES} → {n.DOMINGO}
-                          </td>
-                          <td style={{ padding:'10px', textAlign:'right', fontWeight:700, ...S.mono }}>
-                            {fmtCLP(parseFloat(n.TOTAL) || 0)}
-                          </td>
-                          <td style={{ padding:'10px', ...S.mono, color:'#666' }}>{n.TOTAL_DOCS}</td>
-                          <td style={{ padding:'10px', fontSize:10, color:'#999' }}>
-                            {n.TIMESTAMP ? String(n.TIMESTAMP).replace('T',' ').slice(0,16) : ''}
-                          </td>
-                          <td style={{ padding:'10px' }}>
-                            <button onClick={() => loadNominaFromSheet(n.FECHA_PAGO)}
-                              style={{ padding:'5px 14px', background:'#1D9E75', color:'#fff', border:'none',
-                                borderRadius:6, fontSize:11, fontWeight:700, cursor:'pointer' }}>
-                              Abrir →
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {!loadingSheets && nominasGuardadas.length === 0 && !APPS_SCRIPT_URL.startsWith('PEGA_') && (
-              <div style={{ ...S.card, textAlign:'center', padding:40, color:'#aaa' }}>
-                <p style={{ fontSize:14 }}>No hay nóminas guardadas todavía.</p>
-                <p style={{ fontSize:12, marginTop:4 }}>
-                  Procesa una nómina y pulsa "Guardar en Sheet" en la pestaña Confirmar.
-                </p>
-              </div>
-            )}
-          </div>
+          <TabAnteriores
+            fechas={fechas} setFechas={setFechas}
+            loadingNomina={loadingNomina} loadNominaFromSheet={loadNominaFromSheet}
+            loadingSheets={loadingSheets}
+            nominasGuardadas={nominasGuardadas} fetchNominasGuardadas={fetchNominasGuardadas}
+            S={S}/>
         )}
 
         {/* ═══ TAB 5: CORREO LBS ═══ */}
@@ -1586,70 +1480,7 @@ export default function App() {
 
         {/* ═══ TAB: BÚSQUEDA HISTÓRICA ═══ */}
         {tab === "buscar" && (
-          <div className="fade-in">
-            <div style={S.card}>
-              <div style={S.sectionTitle}>Buscar en histórico</div>
-              <div style={{ display:'flex', gap:10 }}>
-                <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && doSearch()}
-                  placeholder="Buscar por Nº documento, RUT, proveedor o fecha…" style={{ ...S.input, flex:1 }}/>
-                <button onClick={doSearch}
-                  style={{ padding:'8px 24px', borderRadius:8, background:'#1D9E75', color:'#fff',
-                    fontWeight:600, fontSize:13, border:'none', cursor:'pointer' }}>Buscar</button>
-              </div>
-              {loadingSheets && <p className="pulse" style={{ fontSize:11, color:'#aaa', marginTop:8 }}>Cargando datos…</p>}
-              {!loadingSheets && historico.length > 0 && (
-                <p style={{ fontSize:10, color:'#bbb', marginTop:6 }}>
-                  {historico.length.toLocaleString('de-DE')} registros cargados · {getField(historico[0], 'FECHA_PAGO')} a {getField(historico[historico.length-1], 'FECHA_PAGO')}
-                </p>
-              )}
-            </div>
-            {searchResults.length > 0 && (
-              <div style={{ ...S.card, padding:0, overflow:'hidden' }}>
-                <div style={{ padding:'10px 16px', background:'#FAFAF7', borderBottom:'1px solid #E0E0D8' }}>
-                  <span style={{ fontSize:11, color:'#888', fontWeight:500 }}>{searchResults.length} resultados</span>
-                </div>
-                <div style={{ overflowX:'auto', maxHeight:'50vh', overflowY:'auto' }}>
-                  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-                    <thead style={{ position:'sticky', top:0 }}>
-                      <tr style={{ background:'#fff', borderBottom:'2px solid #E0E0D8' }}>
-                        {['FECHA','Nº DOC','RUT','DETALLE','MONTO','CUOTAS','AUTH'].map(h => (
-                          <th key={h} style={{ padding:'8px 10px', textAlign:'left', fontSize:10, fontWeight:700, color:'#888' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {searchResults.map((r, i) => (
-                        <tr key={i} style={{ borderBottom:'1px solid #f0f0ec', background: i % 2 ? '#FAFAF7' : '#fff' }}>
-                          <td style={{ padding:'5px 10px', fontSize:11 }}>{getField(r, 'FECHA_PAGO', 'Fecha_Pago', 'fecha_pago', 'FECHA')}</td>
-                          <td style={{ padding:'5px 10px', fontSize:11, ...S.mono }}>{getField(r, 'N_DOCUMENTO', 'N_Documento', 'N° DOCUMENTO', 'N DOCUMENTO')}</td>
-                          <td style={{ padding:'5px 10px', fontSize:11, ...S.mono, color:'#888' }}>{getField(r, 'RUT', 'Rut')}</td>
-                          <td style={{ padding:'5px 10px', fontSize:11 }}>{getField(r, 'DETALLE', 'Detalle')}</td>
-                          <td style={{ padding:'5px 10px', fontSize:11, textAlign:'right', fontWeight:600, ...S.mono }}>
-                            {fmtCLP(parseMonto(getField(r, 'MONTO', 'Monto')))}
-                          </td>
-                          <td style={{ padding:'5px 10px', fontSize:11, textAlign:'center' }}>
-                            {(() => {
-                              const c = getField(r, 'CUOTAS', 'Cuotas');
-                              return c && c !== 'nan' ? (
-                                <span style={{ background:'#DBEAFE', color:'#1D4ED8', padding:'2px 6px', borderRadius:99, fontSize:9 }}>{c}</span>
-                              ) : null;
-                            })()}
-                          </td>
-                          <td style={{ padding:'5px 10px', fontSize:11, textAlign:'center', fontWeight:700 }}>{getField(r, 'AUTORIZADOR', 'Autorizador')}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-            {searchQuery && searchResults.length === 0 && !loadingSheets && (
-              <div style={{ ...S.card, textAlign:'center', padding:48, color:'#aaa' }}>
-                Sin resultados para "{searchQuery}"
-              </div>
-            )}
-          </div>
+          <TabBuscar historico={historico} loadingSheets={loadingSheets} S={S}/>
         )}
 
       </main>
@@ -1763,38 +1594,3 @@ export default function App() {
   );
 }
 
-// ─── SUB-COMPONENTS ──────────────────────────────────────────────────
-function DropZone({ label, icon, hint, fileName, onFile }) {
-  const [over, setOver] = useState(false);
-  const ref = useRef();
-  return (
-    <div onClick={() => ref.current?.click()}
-      onDragOver={e => { e.preventDefault(); setOver(true); }}
-      onDragLeave={() => setOver(false)}
-      onDrop={e => { e.preventDefault(); setOver(false); if(e.dataTransfer.files[0]) onFile(e.dataTransfer.files[0]); }}
-      style={{ background:'#fff', borderRadius:12, border: fileName ? '2px solid #1D9E75' : over ? '2px dashed #1D9E75' : '2px dashed #ccc',
-        padding:'28px 16px', textAlign:'center', cursor:'pointer', transition:'all .15s',
-        ...(fileName || over ? { background:'rgba(29,158,117,.03)' } : {}), marginBottom:12 }}>
-      <input ref={ref} type="file" accept=".xlsx,.xls" style={{ display:'none' }}
-        onChange={e => { if(e.target.files[0]) onFile(e.target.files[0]); }}/>
-      <div style={{ fontSize:30, marginBottom:6 }}>{fileName ? '✅' : icon}</div>
-      <p style={{ fontSize:13, fontWeight:500, color:'#666' }}>{label}</p>
-      {fileName
-        ? <p style={{ fontSize:11, fontWeight:700, color:'#1D9E75', marginTop:4, wordBreak:'break-all' }}>{fileName}</p>
-        : <p style={{ fontSize:11, color:'#aaa', marginTop:3 }}>{hint}</p>}
-    </div>
-  );
-}
-
-function Stat({ label, value, sub, highlight }) {
-  return (
-    <div style={{ borderRadius:10, padding:14, border:'1px solid', marginBottom:12,
-      ...(highlight
-        ? { background:'#1D9E75', borderColor:'#1D9E75', color:'#fff' }
-        : { background:'#fff', borderColor:'#E0E0D8' }) }}>
-      <p style={{ fontSize:11, fontWeight:500, color: highlight ? 'rgba(255,255,255,.7)' : '#888' }}>{label}</p>
-      <p style={{ fontSize:20, fontWeight:700, marginTop:3, fontFamily:"'DM Mono',monospace" }}>{value}</p>
-      {sub && <p style={{ fontSize:11, marginTop:2, color: highlight ? 'rgba(255,255,255,.6)' : '#aaa' }}>{sub}</p>}
-    </div>
-  );
-}
