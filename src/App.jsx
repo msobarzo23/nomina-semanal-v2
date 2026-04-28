@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, CUOTA_RULES, AUTH_LIST } from './config.js';
-import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates, parseMonto, parseCuotas } from './utils.js';
+import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates, parseMonto, parseCuotas, escapeHtml } from './utils.js';
 
 export default function App() {
   const [tab, setTab] = useState("carga");
@@ -23,6 +23,10 @@ export default function App() {
   const [loadedFromSheet, setLoadedFromSheet] = useState(null); // fecha si viene cargada del sheet
   const [saving, setSaving] = useState(false);
   const [loadingNomina, setLoadingNomina] = useState(false);
+  // Revisión: filtros, orden y selección múltiple
+  const [revFilters, setRevFilters] = useState({ search:'', auth:new Set(), ncOnly:false });
+  const [revSort, setRevSort] = useState({ field:null, dir:'asc' });
+  const [selectedIds, setSelectedIds] = useState(new Set());
 
   // ─── LOAD GOOGLE SHEETS ON MOUNT ───────────────────────────────────
   useEffect(() => {
@@ -152,6 +156,7 @@ export default function App() {
       }));
       setNominaRows(rows);
       setLoadedFromSheet(fecha);
+      setSelectedIds(new Set());
       setTab("revision");
       showToast(`✓ Nómina del ${fecha} cargada (${rows.length} docs)`);
     } catch(e) {
@@ -353,6 +358,7 @@ export default function App() {
       return a.detalle.localeCompare(b.detalle);
     });
     setNominaRows(result);
+    setSelectedIds(new Set());
     setProcessing(false);
     setTab("revision");
   }, [dataNomina, dataCopec, fechas, historico, authMap]);
@@ -395,6 +401,52 @@ export default function App() {
     });
   };
 
+  // Aplica busqueda + filtros + orden a la tabla de Revision (sin mutar nominaRows)
+  const displayedRows = useMemo(() => {
+    let rows = nominaRows;
+    const q = revFilters.search.trim().toLowerCase();
+    if(q) {
+      rows = rows.filter(r =>
+        (r.nDoc || '').toLowerCase().includes(q) ||
+        (r.rut || '').toLowerCase().includes(q) ||
+        (r.detalle || '').toLowerCase().includes(q)
+      );
+    }
+    if(revFilters.auth.size > 0) {
+      rows = rows.filter(r => revFilters.auth.has(r.autorizador));
+    }
+    if(revFilters.ncOnly) rows = rows.filter(r => r.isNC);
+    if(revSort.field) {
+      const f = revSort.field;
+      const mult = revSort.dir === 'asc' ? 1 : -1;
+      rows = [...rows].sort((a, b) => {
+        const av = a[f], bv = b[f];
+        if(typeof av === 'number' && typeof bv === 'number') return (av - bv) * mult;
+        return String(av ?? '').localeCompare(String(bv ?? '')) * mult;
+      });
+    }
+    return rows;
+  }, [nominaRows, revFilters, revSort]);
+
+  const bulkUpdateAuth = (newAuth) => {
+    if(selectedIds.size === 0) return;
+    const count = selectedIds.size;
+    setNominaRows(prev => {
+      const updated = prev.map(r => selectedIds.has(r.id) ? { ...r, autorizador:newAuth } : r);
+      return recomputeCuotas(updated);
+    });
+    setSelectedIds(new Set());
+    showToast(`✓ ${count} fila(s) actualizada(s) a ${newAuth}`);
+  };
+
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if(next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
   // ─── STATS ─────────────────────────────────────────────────────────
   const stats = useMemo(() => {
     const esCombustibleActual = (r) => {
@@ -429,6 +481,7 @@ export default function App() {
     });
     const sortedWeeks = Object.entries(weekTotals).sort((a,b) => a[0].localeCompare(b[0]));
     const prevWeek = sortedWeeks.length > 0 ? sortedWeeks[sortedWeeks.length - 1] : null;
+    const prevWeekDate = prevWeek ? prevWeek[0] : null;
     const varTotal = prevWeek && prevWeek[1].total ? ((total / prevWeek[1].total) - 1) * 100 : null;
     const varProveedores = prevWeek && prevWeek[1].proveedores ? ((proveedorTotal / prevWeek[1].proveedores) - 1) * 100 : null;
     const varCombustible = prevWeek && prevWeek[1].combustible ? ((combustibleTotal / prevWeek[1].combustible) - 1) * 100 : null;
@@ -458,7 +511,7 @@ export default function App() {
     if(newProvs.length > 0) alerts.push({ type:'info', text:`${newProvs.length} proveedor(es) nuevo(s): ${newProvs.slice(0,3).join(', ')}${newProvs.length>3?'…':''}` });
 
     return { combustibleRows, proveedorRows, combustibleTotal, proveedorTotal, total, byAuth, top5,
-             totalDocs: nominaRows.length, prevWeek, varTotal, varProveedores, varCombustible,
+             totalDocs: nominaRows.length, prevWeek, prevWeekDate, varTotal, varProveedores, varCombustible,
              avg4Total, varVsAvg, alerts, sortedWeeks };
   }, [nominaRows, historico, fechas.viernes]);
 
@@ -492,6 +545,7 @@ export default function App() {
     });
     const semanasSorted = Object.entries(semanas).sort((a,b) => a[0].localeCompare(b[0]));
     const prevSemana = semanasSorted.length > 0 ? semanasSorted[semanasSorted.length - 1][1] : null;
+    const prevSemanaDate = semanasSorted.length > 0 ? semanasSorted[semanasSorted.length - 1][0] : null;
 
     // Promedio 4 últimas semanas por categoría
     const last4 = semanasSorted.slice(-4).map(s => s[1]);
@@ -532,7 +586,7 @@ export default function App() {
 
     return { petroleo, lubricantes, neumaticos,
              totalPetroleo, totalLubricantes, totalNeumaticos,
-             prevSemana, varP, varL, varN,
+             prevSemana, prevSemanaDate, varP, varL, varN,
              avgP, avgL, avgN, varPavg, varLavg, varNavg,
              alerts };
   }, [nominaRows, historico, fechas.viernes]);
@@ -681,7 +735,7 @@ export default function App() {
                 </p>
               </div>
             </div>
-            <button onClick={() => { setLoadedFromSheet(null); setNominaRows([]); setTab('carga'); }}
+            <button onClick={() => { setLoadedFromSheet(null); setNominaRows([]); setSelectedIds(new Set()); setRevFilters({ search:'', auth:new Set(), ncOnly:false }); setTab('carga'); }}
               style={{ padding:'6px 12px', background:'#fff', border:'1px solid #BFDBFE', borderRadius:6,
                 fontSize:11, fontWeight:600, color:'#1E40AF', cursor:'pointer' }}>
               Limpiar y empezar nueva
@@ -752,21 +806,123 @@ export default function App() {
                   </p>
                 </div>
               )}
+
+              {/* Barra de filtros */}
+              <div style={{ ...S.card, padding:'10px 14px' }}>
+                <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+                  <input value={revFilters.search}
+                    onChange={e => setRevFilters(p => ({ ...p, search:e.target.value }))}
+                    placeholder="Buscar Nº doc, RUT o detalle…"
+                    style={{ ...S.input, flex:'1 1 240px', minWidth:200 }}/>
+                  <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                    {AUTH_LIST.map(a => {
+                      const active = revFilters.auth.has(a);
+                      return (
+                        <button key={a}
+                          onClick={() => setRevFilters(p => {
+                            const auth = new Set(p.auth);
+                            if(auth.has(a)) auth.delete(a); else auth.add(a);
+                            return { ...p, auth };
+                          })}
+                          style={{ padding:'5px 10px', fontSize:11, fontWeight:700, borderRadius:6,
+                            border: active ? '1.5px solid #1D9E75' : '1px solid #ddd',
+                            background: active ? '#1D9E75' : '#fff',
+                            color: active ? '#fff' : '#666', cursor:'pointer' }}>
+                          {a}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, color:'#666', cursor:'pointer' }}>
+                    <input type="checkbox" checked={revFilters.ncOnly}
+                      onChange={e => setRevFilters(p => ({ ...p, ncOnly:e.target.checked }))}/>
+                    Solo NC
+                  </label>
+                  {(revFilters.search || revFilters.auth.size > 0 || revFilters.ncOnly) && (
+                    <button onClick={() => setRevFilters({ search:'', auth:new Set(), ncOnly:false })}
+                      style={{ padding:'5px 10px', fontSize:11, color:'#888', background:'transparent',
+                        border:'none', cursor:'pointer', textDecoration:'underline' }}>
+                      Limpiar filtros
+                    </button>
+                  )}
+                  <span style={{ marginLeft:'auto', fontSize:11, color:'#888' }}>
+                    {displayedRows.length}/{nominaRows.length} filas
+                  </span>
+                </div>
+              </div>
+
+              {/* Barra de edición masiva */}
+              {selectedIds.size > 0 && (
+                <div style={{ background:'#EFF6FF', border:'1px solid #BFDBFE', borderRadius:12,
+                  padding:'10px 14px', marginBottom:12, display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+                  <span style={{ fontSize:13, fontWeight:700, color:'#1E40AF' }}>
+                    {selectedIds.size} fila{selectedIds.size === 1 ? '' : 's'} seleccionada{selectedIds.size === 1 ? '' : 's'}
+                  </span>
+                  <span style={{ fontSize:12, color:'#3B82F6' }}>· Cambiar autorizador a:</span>
+                  {AUTH_LIST.map(a => (
+                    <button key={a} onClick={() => bulkUpdateAuth(a)}
+                      style={{ padding:'5px 12px', fontSize:11, fontWeight:700, background:'#fff',
+                        border:'1px solid #BFDBFE', borderRadius:6, color:'#1E40AF', cursor:'pointer' }}>
+                      {a}
+                    </button>
+                  ))}
+                  <button onClick={() => setSelectedIds(new Set())}
+                    style={{ marginLeft:'auto', padding:'5px 10px', fontSize:11, color:'#888',
+                      background:'transparent', border:'none', cursor:'pointer' }}>
+                    Quitar selección
+                  </button>
+                </div>
+              )}
+
               <div style={{ ...S.card, padding:0, overflow:'hidden' }}>
                 <div style={{ overflowX:'auto', maxHeight:'58vh', overflowY:'auto' }}>
                   <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
                     <thead style={{ position:'sticky', top:0, zIndex:5 }}>
                       <tr style={{ background:'#0D3B2E' }}>
-                        {['Nº DOC','RUT','DETALLE','MONTO','CUOTAS','AUTORIZADOR'].map((h, i) => (
-                          <th key={h} style={{ color:'#fff', padding:'8px 10px', fontSize:10, fontWeight:700,
-                            letterSpacing:'.04em', textAlign:i===3?'right':i>=4?'center':'left', whiteSpace:'nowrap' }}>{h}</th>
-                        ))}
+                        <th style={{ width:32, padding:'8px 6px', textAlign:'center' }}>
+                          <input type="checkbox"
+                            checked={displayedRows.length > 0 && displayedRows.every(r => selectedIds.has(r.id))}
+                            onChange={e => {
+                              if(e.target.checked) setSelectedIds(new Set(displayedRows.map(r => r.id)));
+                              else setSelectedIds(new Set());
+                            }}
+                            style={{ cursor:'pointer' }}/>
+                        </th>
+                        {[
+                          { k:'nDoc',        label:'Nº DOC',      align:'left'   },
+                          { k:'rut',         label:'RUT',         align:'left'   },
+                          { k:'detalle',     label:'DETALLE',     align:'left'   },
+                          { k:'monto',       label:'MONTO',       align:'right'  },
+                          { k:'cuotas',      label:'CUOTAS',      align:'center' },
+                          { k:'autorizador', label:'AUTORIZADOR', align:'center' },
+                        ].map(h => {
+                          const isActive = revSort.field === h.k;
+                          return (
+                            <th key={h.k}
+                              onClick={() => setRevSort(p => ({
+                                field:h.k,
+                                dir: p.field === h.k && p.dir === 'asc' ? 'desc' : 'asc',
+                              }))}
+                              style={{ color:'#fff', padding:'8px 10px', fontSize:10, fontWeight:700,
+                                letterSpacing:'.04em', textAlign:h.align, whiteSpace:'nowrap',
+                                cursor:'pointer', userSelect:'none' }}>
+                              {h.label}{isActive && (
+                                <span style={{ marginLeft:4, opacity:.85 }}>{revSort.dir === 'asc' ? '▲' : '▼'}</span>
+                              )}
+                            </th>
+                          );
+                        })}
                       </tr>
                     </thead>
                     <tbody>
-                      {nominaRows.map((r, i) => (
+                      {displayedRows.map((r, i) => (
                         <tr key={r.id} style={{ borderBottom:'1px solid #f0f0ec',
-                          background: r.isNC ? '#FFF5F5' : i % 2 ? '#FAFAF7' : '#fff' }}>
+                          background: selectedIds.has(r.id) ? '#EFF6FF' : r.isNC ? '#FFF5F5' : i % 2 ? '#FAFAF7' : '#fff' }}>
+                          <td style={{ padding:'6px 6px', textAlign:'center' }}>
+                            <input type="checkbox" checked={selectedIds.has(r.id)}
+                              onChange={() => toggleSelect(r.id)}
+                              style={{ cursor:'pointer' }}/>
+                          </td>
                           <td style={{ padding:'6px 10px' }}>
                             {r.isNC ? (
                               <input value={r.nDoc} onChange={e => updateRow(r.id, 'nDoc', e.target.value)}
@@ -839,10 +995,11 @@ export default function App() {
                     <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6 }}>
                       <span style={{ fontSize:11, color:'#1D9E75' }}>{stats.totalDocs} documentos</span>
                       {stats.varTotal !== null && (
-                        <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4,
+                        <span title={stats.prevWeekDate ? `Semana anterior: ${stats.prevWeekDate}` : ''}
+                          style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4,
                           background: stats.varTotal > 0 ? '#FEF3C7' : '#D1FAE5',
                           color: stats.varTotal > 0 ? '#92400E' : '#065F46' }}>
-                          {stats.varTotal > 0 ? '▲' : '▼'} {Math.abs(stats.varTotal).toFixed(1)}% vs anterior
+                          {stats.varTotal > 0 ? '▲' : '▼'} {Math.abs(stats.varTotal).toFixed(1)}% vs {stats.prevWeekDate ? `${stats.prevWeekDate.slice(8,10)}/${stats.prevWeekDate.slice(5,7)}` : 'anterior'}
                         </span>
                       )}
                     </div>
@@ -1143,7 +1300,7 @@ export default function App() {
                       <table width="100%" cellpadding="0" cellspacing="0" style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;">
                         <tr>
                           <td style="padding:10px 14px;font-size:11px;color:#6B7280;">Esta semana</td>
-                          <td style="padding:10px 14px;font-size:11px;color:#6B7280;">Anterior</td>
+                          <td style="padding:10px 14px;font-size:11px;color:#6B7280;">Anterior${correoLBS.prevSemanaDate ? ` (${correoLBS.prevSemanaDate.slice(8,10)}/${correoLBS.prevSemanaDate.slice(5,7)})` : ''}</td>
                           <td style="padding:10px 14px;font-size:11px;color:#6B7280;">Prom. 4 sem</td>
                         </tr>
                         <tr>
@@ -1164,13 +1321,13 @@ export default function App() {
                     const bg = i % 2 === 0 ? '#ffffff' : bgStripe;
                     const montoColor = r.monto < 0 ? '#DC2626' : '#1a1a1a';
                     const provTd = showProveedor
-                      ? `<td style="padding:8px 12px;font-size:13px;color:#444;border-bottom:1px solid #E8E8E3;">${r.detalle}</td>` : '';
+                      ? `<td style="padding:8px 12px;font-size:13px;color:#444;border-bottom:1px solid #E8E8E3;">${escapeHtml(r.detalle)}</td>` : '';
                     const cuotaTd = showCuotas
                       ? `<td style="padding:8px 12px;text-align:center;border-bottom:1px solid #E8E8E3;">
-                          ${r.cuotas ? `<span style="background:#DBEAFE;color:#1D4ED8;font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;">${r.cuotas}</span>` : ''}
+                          ${r.cuotas ? `<span style="background:#DBEAFE;color:#1D4ED8;font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;">${escapeHtml(r.cuotas)}</span>` : ''}
                         </td>` : '';
                     return `<tr style="background:${bg};">
-                      <td style="padding:8px 12px;font-family:monospace;font-size:13px;border-bottom:1px solid #E8E8E3;">${r.nDoc}</td>
+                      <td style="padding:8px 12px;font-family:monospace;font-size:13px;border-bottom:1px solid #E8E8E3;">${escapeHtml(r.nDoc)}</td>
                       <td style="padding:8px 12px;text-align:center;font-size:13px;color:#555;border-bottom:1px solid #E8E8E3;">${fechas.viernes}</td>
                       ${provTd}
                       <td style="padding:8px 12px;text-align:right;font-family:monospace;font-weight:600;font-size:13px;color:${montoColor};border-bottom:1px solid #E8E8E3;">${fmtCLP(r.monto)}</td>
@@ -1332,7 +1489,9 @@ export default function App() {
                             <p style={{ ...S.mono, fontWeight:700, fontSize:13, color, marginTop:2 }}>{fmtCLP(total)}</p>
                           </div>
                           <div>
-                            <p style={{ fontSize:10, color:'#6B7280' }}>Anterior</p>
+                            <p style={{ fontSize:10, color:'#6B7280' }}>
+                              Anterior{correoLBS.prevSemanaDate ? ` (${correoLBS.prevSemanaDate.slice(8,10)}/${correoLBS.prevSemanaDate.slice(5,7)})` : ''}
+                            </p>
                             <p style={{ ...S.mono, fontSize:12, color:'#444', marginTop:2 }}>
                               {prev ? fmtCLP(prev) : '—'}
                               {vari !== null && (

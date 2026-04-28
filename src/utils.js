@@ -46,6 +46,17 @@ export const normDoc = v => {
   return v.toString().trim().replace(/\.0+$/, '');
 };
 
+// Escapa caracteres especiales de HTML para evitar inyeccion al construir correos
+export const escapeHtml = v => {
+  if(v == null) return '';
+  return v.toString()
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};
+
 // Reconstruye cuotas "X/Y" cuando Google Sheets las guardó como fecha (locale es-CL: DD/MM)
 export const parseCuotas = v => {
   if(v == null || v === '') return '';
