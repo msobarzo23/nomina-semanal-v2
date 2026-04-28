@@ -6,6 +6,22 @@ export const AUTORIZADORES_URL = `${SHEET_PUB_BASE}?gid=1684740922&single=true&o
 // Instrucciones en README_SETUP.md
 export const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx_Io6w5no_zdddc5q_uVYmzF7NGaMs-l8p0Sn_NaEl5KUSoXaCACaU-6LwCHlN-nsxEg/exec";
 
+// Token compartido para autenticar peticiones al Apps Script.
+// Se inyecta en build via variable de entorno VITE_APPS_SCRIPT_TOKEN.
+// Si el Apps Script no esta configurado para validar token, deja vacio (fallback).
+// Ver SECURITY_SETUP.md para configurar.
+export const APPS_SCRIPT_TOKEN = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_APPS_SCRIPT_TOKEN) || '';
+
+// Helpers para construir URLs y bodies con token
+export const withToken = (url) => {
+  if(!APPS_SCRIPT_TOKEN) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(APPS_SCRIPT_TOKEN);
+};
+export const withTokenBody = (body) => {
+  if(!APPS_SCRIPT_TOKEN) return body;
+  return { ...body, token: APPS_SCRIPT_TOKEN };
+};
+
 export const COPEC_EXCLUSIONS = new Set([
   "COPEC S A","COPEC S A (LUBRICANTES)","COPEC S A (LUBRICANTES)(NOTA DE CREDITO)",
   "ESMAX DISTRIBUCION SPA","FLUX SOLAR ENERGIAS RENOVABLES SPA",

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { fmtCLP } from '../utils.js';
-import { APPS_SCRIPT_URL } from '../config.js';
+import { APPS_SCRIPT_URL, withToken } from '../config.js';
 
 export default function TabComparar({ nominasGuardadas, S }) {
   const [fechaA, setFechaA] = useState('');
@@ -25,8 +25,8 @@ export default function TabComparar({ nominasGuardadas, S }) {
     setError(''); setLoading(true); setDatosA(null); setDatosB(null);
     try {
       const [rA, rB] = await Promise.all([
-        fetch(`${APPS_SCRIPT_URL}?action=load&fecha=${encodeURIComponent(fechaA)}`).then(r => r.json()),
-        fetch(`${APPS_SCRIPT_URL}?action=load&fecha=${encodeURIComponent(fechaB)}`).then(r => r.json()),
+        fetch(withToken(`${APPS_SCRIPT_URL}?action=load&fecha=${encodeURIComponent(fechaA)}`)).then(r => r.json()),
+        fetch(withToken(`${APPS_SCRIPT_URL}?action=load&fecha=${encodeURIComponent(fechaB)}`)).then(r => r.json()),
       ]);
       if(!rA.ok) { setError(`Error en A: ${rA.error || 'no disponible'}`); setLoading(false); return; }
       if(!rB.ok) { setError(`Error en B: ${rB.error || 'no disponible'}`); setLoading(false); return; }

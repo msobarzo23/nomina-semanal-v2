@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
-import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, CUOTA_RULES, AUTH_LIST } from './config.js';
+import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, CUOTA_RULES, AUTH_LIST, withToken, withTokenBody } from './config.js';
 import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates, parseMonto, parseCuotas, escapeHtml } from './utils.js';
 import DropZone from './components/DropZone.jsx';
 import Stat from './components/Stat.jsx';
@@ -138,7 +138,7 @@ export default function App() {
   const fetchNominasGuardadas = useCallback(async () => {
     if(!APPS_SCRIPT_URL || APPS_SCRIPT_URL.startsWith('PEGA_')) return;
     try {
-      const r = await fetch(`${APPS_SCRIPT_URL}?action=list`);
+      const r = await fetch(withToken(`${APPS_SCRIPT_URL}?action=list`));
       const j = await r.json();
       if(j.ok) setNominasGuardadas(j.nominas || []);
     } catch(e) { console.error("Error listando nóminas:", e); }
@@ -152,7 +152,7 @@ export default function App() {
     }
     setLoadingNomina(true);
     try {
-      const r = await fetch(`${APPS_SCRIPT_URL}?action=load&fecha=${encodeURIComponent(fecha)}`);
+      const r = await fetch(withToken(`${APPS_SCRIPT_URL}?action=load&fecha=${encodeURIComponent(fecha)}`));
       const j = await r.json();
       if(!j.ok) { showToast(`❌ ${j.error || 'No se pudo cargar'}`); setLoadingNomina(false); return; }
       // Reconstruir estado
@@ -246,7 +246,7 @@ export default function App() {
       const r = await fetch(APPS_SCRIPT_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'save', payload }),
+        body: JSON.stringify(withTokenBody({ action: 'save', payload })),
       });
       const j = await r.json();
       if(j.ok) {
