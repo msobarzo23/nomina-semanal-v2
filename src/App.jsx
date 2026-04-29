@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
-import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, CUOTA_RULES, AUTH_LIST, withToken, withTokenBody } from './config.js';
+import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, CUOTA_RULES, AUTH_LIST, withToken, withTokenBody, isAuthError, checkAppsScriptConnection } from './config.js';
 import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates, parseMonto, parseCuotas, escapeHtml } from './utils.js';
 import DropZone from './components/DropZone.jsx';
 import Stat from './components/Stat.jsx';
@@ -29,6 +29,8 @@ export default function App() {
   const [loadedFromSheet, setLoadedFromSheet] = useState(null); // fecha si viene cargada del sheet
   const [saving, setSaving] = useState(false);
   const [loadingNomina, setLoadingNomina] = useState(false);
+  // Estado de conexión con Apps Script: { status:'ok'|'auth'|'network'|'unconfigured'|'unknown'|'checking', message:string }
+  const [apiStatus, setApiStatus] = useState({ status:'checking', message:'Verificando conexión…' });
   // Revisión: filtros, orden y selección múltiple
   const [revFilters, setRevFilters] = useState({ search:'', auth:new Set(), ncOnly:false });
   const [revSort, setRevSort] = useState({ field:null, dir:'asc' });
@@ -136,12 +138,26 @@ export default function App() {
 
   // ─── APPS SCRIPT: LIST ─────────────────────────────────────────────
   const fetchNominasGuardadas = useCallback(async () => {
-    if(!APPS_SCRIPT_URL || APPS_SCRIPT_URL.startsWith('PEGA_')) return;
+    if(!APPS_SCRIPT_URL || APPS_SCRIPT_URL.startsWith('PEGA_')) {
+      setApiStatus({ status:'unconfigured', message:'Apps Script no configurado en config.js' });
+      return;
+    }
     try {
       const r = await fetch(withToken(`${APPS_SCRIPT_URL}?action=list`));
-      const j = await r.json();
-      if(j.ok) setNominasGuardadas(j.nominas || []);
-    } catch(e) { console.error("Error listando nóminas:", e); }
+      const text = await r.text();
+      let j; try { j = JSON.parse(text); } catch { j = null; }
+      if(j && j.ok) {
+        setNominasGuardadas(j.nominas || []);
+        setApiStatus({ status:'ok', message:'Conexión correcta' });
+      } else if((j && isAuthError(j.error)) || isAuthError(text)) {
+        setApiStatus({ status:'auth', message:(j && j.error) || 'Token inválido o ausente' });
+      } else {
+        setApiStatus({ status:'unknown', message:(j && j.error) || 'Respuesta inesperada del Apps Script' });
+      }
+    } catch(e) {
+      console.error("Error listando nóminas:", e);
+      setApiStatus({ status:'network', message: e?.message || 'Sin conexión con el Apps Script' });
+    }
   }, []);
 
   // ─── APPS SCRIPT: LOAD ─────────────────────────────────────────────
@@ -153,8 +169,18 @@ export default function App() {
     setLoadingNomina(true);
     try {
       const r = await fetch(withToken(`${APPS_SCRIPT_URL}?action=load&fecha=${encodeURIComponent(fecha)}`));
-      const j = await r.json();
-      if(!j.ok) { showToast(`❌ ${j.error || 'No se pudo cargar'}`); setLoadingNomina(false); return; }
+      const text = await r.text();
+      let j; try { j = JSON.parse(text); } catch { j = null; }
+      if(!j || !j.ok) {
+        const isAuth = (j && isAuthError(j.error)) || isAuthError(text);
+        if(isAuth) {
+          setApiStatus({ status:'auth', message:(j && j.error) || 'Token inválido o ausente' });
+          showToast(`❌ Token inválido — revisa la pestaña Anteriores para los pasos de recuperación`);
+        } else {
+          showToast(`❌ ${(j && j.error) || 'No se pudo cargar'}`);
+        }
+        setLoadingNomina(false); return;
+      }
       // Reconstruir estado
       const enc = j.encabezado;
       setFechas({
@@ -240,6 +266,20 @@ export default function App() {
       })),
     };
 
+    // Respaldo local antes de mandar al Apps Script — si falla el envío
+    // (token, red, etc.), el trabajo no se pierde y se puede reintentar.
+    try {
+      const backupKey = `nominaBackup_${fechas.viernes}`;
+      localStorage.setItem(backupKey, JSON.stringify({
+        savedAt: new Date().toISOString(),
+        payload,
+      }));
+      // También dejar siempre un "último intento" accesible
+      localStorage.setItem('nominaBackup_last', JSON.stringify({
+        fecha: fechas.viernes, savedAt: new Date().toISOString(), payload,
+      }));
+    } catch(e) { console.warn('No se pudo respaldar localmente:', e); }
+
     setSaving(true);
     try {
       // Apps Script web apps no requieren headers especiales — usar text/plain para evitar preflight CORS
@@ -248,17 +288,25 @@ export default function App() {
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(withTokenBody({ action: 'save', payload })),
       });
-      const j = await r.json();
-      if(j.ok) {
+      const text = await r.text();
+      let j; try { j = JSON.parse(text); } catch { j = null; }
+      if(j && j.ok) {
         showToast(`✓ Nómina ${fechas.viernes} guardada (${j.docs} docs)`);
         fetchNominasGuardadas();
         setLoadedFromSheet(fechas.viernes);
+        try { localStorage.removeItem(`nominaBackup_${fechas.viernes}`); } catch(e) {}
       } else {
-        showToast(`❌ ${j.error || 'No se pudo guardar'}`);
+        const isAuth = (j && isAuthError(j.error)) || isAuthError(text);
+        if(isAuth) {
+          setApiStatus({ status:'auth', message:(j && j.error) || 'Token inválido o ausente' });
+          showToast(`❌ Token inválido — tu nómina quedó respaldada localmente. Ver pestaña Anteriores para recuperar.`);
+        } else {
+          showToast(`❌ ${(j && j.error) || 'No se pudo guardar'} — respaldo local guardado`);
+        }
       }
     } catch(e) {
       console.error(e);
-      showToast("❌ Error guardando nómina");
+      showToast("❌ Error guardando nómina — respaldo local guardado");
     }
     setSaving(false);
   }, [nominaRows, fechas, fetchNominasGuardadas, nominasGuardadas]);
@@ -707,6 +755,22 @@ export default function App() {
                     {historico.length.toLocaleString('de-DE')} registros · {nominasGuardadas.length} nóminas guardadas
                   </span>}
             </div>
+            {/* Indicador de estado de conexión con Apps Script */}
+            <span title={apiStatus.message || ''} style={{
+              fontSize:11, fontWeight:700, padding:'4px 8px', borderRadius:6,
+              background: apiStatus.status === 'ok' ? 'rgba(34,197,94,.2)'
+                : apiStatus.status === 'checking' ? 'rgba(255,255,255,.15)'
+                : 'rgba(220,38,38,.25)',
+              color: apiStatus.status === 'ok' ? '#86EFAC' : '#fff',
+              border: `1px solid ${apiStatus.status === 'ok' ? 'rgba(34,197,94,.4)' : 'rgba(255,255,255,.25)'}`,
+            }}>
+              {apiStatus.status === 'ok' ? '● Conectado'
+                : apiStatus.status === 'checking' ? '… Verificando'
+                : apiStatus.status === 'auth' ? '⚠ Token inválido'
+                : apiStatus.status === 'network' ? '⚠ Sin conexión'
+                : apiStatus.status === 'unconfigured' ? '⚠ No configurado'
+                : '⚠ Error'}
+            </span>
             <button onClick={() => setSettingsOpen(true)} title="Plantilla de correo"
               style={{ background:'rgba(255,255,255,.15)', border:'1px solid rgba(255,255,255,.25)',
                 color:'#fff', borderRadius:8, padding:'6px 10px', fontSize:13, cursor:'pointer' }}>
@@ -732,6 +796,41 @@ export default function App() {
         <div className="fade-in" style={{ position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)',
           background:'#0D3B2E', color:'#fff', padding:'12px 24px', borderRadius:12, fontSize:13, fontWeight:600, zIndex:100,
           boxShadow:'0 8px 32px rgba(0,0,0,.2)' }}>{toast}</div>
+      )}
+
+      {/* Banner global de error de conexión con Apps Script */}
+      {(apiStatus.status === 'auth' || apiStatus.status === 'network' || apiStatus.status === 'unconfigured') && (
+        <div className="no-print" style={{ maxWidth:1100, margin:'12px auto 0', padding:'0 16px' }}>
+          <div style={{ background:'#FEF2F2', border:'1px solid #FECACA', borderRadius:10,
+            padding:'12px 16px', display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
+            <div style={{ display:'flex', alignItems:'flex-start', gap:10, flex:1 }}>
+              <span style={{ fontSize:18 }}>⚠️</span>
+              <div>
+                <p style={{ fontSize:13, fontWeight:700, color:'#991B1B' }}>
+                  {apiStatus.status === 'auth' ? 'Token inválido — la app no puede acceder a las nóminas guardadas'
+                    : apiStatus.status === 'network' ? 'No hay conexión con el Apps Script'
+                    : 'Apps Script no configurado'}
+                </p>
+                <p style={{ fontSize:12, color:'#7F1D1D', marginTop:4, lineHeight:1.5 }}>
+                  {apiStatus.status === 'auth'
+                    ? <>El token configurado en Vercel (<code>VITE_APPS_SCRIPT_TOKEN</code>) no coincide con el del Apps Script. Las nóminas no se perdieron — están en Google Sheets. Sigue los pasos en <strong>SECURITY_SETUP.md</strong> para volver a sincronizar el token, o ve a la pestaña <strong>Anteriores</strong> para ver la guía resumida.</>
+                    : apiStatus.status === 'network' ? 'Verifica tu conexión a internet o si el Apps Script sigue desplegado.'
+                    : 'Pega la URL del despliegue en src/config.js (constante APPS_SCRIPT_URL).'}
+                </p>
+                {apiStatus.message && (
+                  <p style={{ fontSize:10, color:'#7F1D1D', opacity:.7, marginTop:6, fontFamily:"'DM Mono',monospace" }}>
+                    Detalle: {apiStatus.message}
+                  </p>
+                )}
+              </div>
+            </div>
+            <button onClick={() => { setApiStatus({ status:'checking', message:'Verificando…' }); fetchNominasGuardadas(); }}
+              style={{ padding:'6px 12px', background:'#DC2626', color:'#fff', border:'none', borderRadius:6,
+                fontSize:11, fontWeight:700, cursor:'pointer', whiteSpace:'nowrap' }}>
+              🔄 Reintentar
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Banner "cargada del sheet" */}
@@ -1131,6 +1230,7 @@ export default function App() {
             loadingNomina={loadingNomina} loadNominaFromSheet={loadNominaFromSheet}
             loadingSheets={loadingSheets}
             nominasGuardadas={nominasGuardadas} fetchNominasGuardadas={fetchNominasGuardadas}
+            apiStatus={apiStatus}
             S={S}/>
         )}
 

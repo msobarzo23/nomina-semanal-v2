@@ -6,6 +6,42 @@ Esta guía agrega un **token compartido** entre el cliente y el Apps Script. El 
 
 ---
 
+## 🚨 ¿Te aparece "Token inválido" y no cargan las nóminas guardadas?
+
+**Tus datos están seguros** — no se perdieron. Las nóminas siguen en Google Sheets. Lo que pasa es que el token configurado en Vercel y el del Apps Script ya no coinciden. Pasos rápidos para recuperar:
+
+### Opción A — Sincronizar tokens (recomendado, 3 minutos)
+
+1. **Abre el Apps Script**: ve a [script.google.com](https://script.google.com) y abre el script de la nómina.
+2. **Copia el token actual del script**: busca la línea `const VALID_TOKEN = "..."` y copia el valor (sin las comillas).
+3. **Abre Vercel**: ve a [vercel.com](https://vercel.com) → tu proyecto → **Settings → Environment Variables**.
+4. **Edita** la variable `VITE_APPS_SCRIPT_TOKEN`:
+   - Si no existe, créala (Name: `VITE_APPS_SCRIPT_TOKEN`, Value: el token copiado, Environments: marca los 3).
+   - Si existe pero tiene otro valor, ponle el del paso 2.
+5. **Redeploy**: ve a **Deployments** → tu último deploy → menú `…` → **Redeploy** (sin caché).
+6. Espera 1–2 min, recarga la app y pulsa **Reintentar** en el banner amarillo o en la pestaña Anteriores.
+
+### Opción B — Generar token nuevo (si perdiste el del script)
+
+1. Genera una cadena aleatoria de 32+ caracteres (ver Paso 1 más abajo).
+2. Pégalo en el Apps Script como `VALID_TOKEN` y crea un **nuevo despliegue** (Deploy → Manage deployments → Edit → New version).
+3. Pégalo en Vercel como `VITE_APPS_SCRIPT_TOKEN` y haz **Redeploy**.
+4. Si trabajas en local, actualiza también tu `.env.local`.
+
+### ¿No quieres token por ahora? (modo legacy temporal)
+
+En el Apps Script, cambia la línea por:
+```js
+const VALID_TOKEN = "PEGA_AQUI_TU_TOKEN_SECRETO";
+```
+Crea un nuevo despliegue. La validación se desactiva automáticamente (ver `_isAuthorized`). **No es seguro para producción**, pero te desbloquea mientras configuras todo.
+
+### ¿Tenías una nómina sin guardar?
+
+La app guarda un **respaldo local automático** antes de mandar a Sheets. Después de arreglar el token, abre la consola del navegador (F12 → Application → Local Storage) y busca `nominaBackup_<fecha>` o `nominaBackup_last`. El payload está ahí en JSON listo para reenviar.
+
+---
+
 ## Paso 1 · Genera un token aleatorio
 
 Abre una terminal o cualquier sitio que genere strings aleatorios y crea una cadena de 32+ caracteres. Ejemplo en bash:
