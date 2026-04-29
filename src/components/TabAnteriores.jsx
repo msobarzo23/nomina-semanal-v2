@@ -6,6 +6,7 @@ export default function TabAnteriores({
   fechas, setFechas,
   loadingNomina, loadNominaFromSheet,
   loadingSheets, nominasGuardadas, fetchNominasGuardadas,
+  apiStatus = { status:'ok' },
   S,
 }) {
   const [filterText, setFilterText] = useState('');
@@ -35,8 +36,73 @@ export default function TabAnteriores({
 
   const hayFiltro = filterText || rangeFrom || rangeTo;
 
+  // Guía contextual cuando el token está inválido
+  const showAuthHelp = apiStatus.status === 'auth';
+  const showNetHelp = apiStatus.status === 'network';
+
   return (
     <div className="fade-in">
+      {showAuthHelp && (
+        <div style={{ ...S.card, background:'#FFFBEB', border:'1px solid #FCD34D' }}>
+          <div style={{ display:'flex', alignItems:'flex-start', gap:12 }}>
+            <span style={{ fontSize:24 }}>🔐</span>
+            <div style={{ flex:1 }}>
+              <p style={{ fontSize:14, fontWeight:700, color:'#92400E', margin:0 }}>
+                Token inválido — pasos para recuperar el acceso
+              </p>
+              <p style={{ fontSize:12, color:'#78350F', marginTop:6, lineHeight:1.5 }}>
+                <strong>Tus nóminas guardadas no se perdieron</strong> — están seguras en Google Sheets. Solo hay que volver a sincronizar el token entre Vercel y el Apps Script.
+              </p>
+              <ol style={{ fontSize:12, color:'#78350F', marginTop:10, paddingLeft:22, lineHeight:1.7 }}>
+                <li>Abre <a href="https://script.google.com" target="_blank" rel="noreferrer" style={{ color:'#B45309', fontWeight:700 }}>script.google.com</a>, abre el script de la nómina y copia el valor de <code style={{ background:'#FEF3C7', padding:'1px 5px', borderRadius:3 }}>VALID_TOKEN</code>.</li>
+                <li>Abre <a href="https://vercel.com" target="_blank" rel="noreferrer" style={{ color:'#B45309', fontWeight:700 }}>vercel.com</a> → tu proyecto → <strong>Settings → Environment Variables</strong>.</li>
+                <li>Edita la variable <code style={{ background:'#FEF3C7', padding:'1px 5px', borderRadius:3 }}>VITE_APPS_SCRIPT_TOKEN</code> y pega el mismo valor (Production, Preview y Development).</li>
+                <li>En la pestaña <strong>Deployments</strong>, en el último deploy: menú <code>…</code> → <strong>Redeploy</strong>.</li>
+                <li>Cuando termine (1–2 min), recarga esta página y pulsa <strong>Reintentar</strong> arriba.</li>
+              </ol>
+              <p style={{ fontSize:11, color:'#78350F', marginTop:10, fontStyle:'italic' }}>
+                La guía completa está en el archivo <strong>SECURITY_SETUP.md</strong> del repositorio.
+              </p>
+              <div style={{ display:'flex', gap:8, marginTop:12 }}>
+                <button onClick={fetchNominasGuardadas}
+                  style={{ padding:'6px 14px', background:'#D97706', color:'#fff', border:'none',
+                    borderRadius:6, fontSize:12, fontWeight:700, cursor:'pointer' }}>
+                  🔄 Probar conexión nuevamente
+                </button>
+                <a href="https://github.com/msobarzo23/nomina-semanal-v2/blob/main/SECURITY_SETUP.md"
+                  target="_blank" rel="noreferrer"
+                  style={{ padding:'6px 14px', background:'#fff', color:'#92400E',
+                    border:'1px solid #FCD34D', borderRadius:6, fontSize:12, fontWeight:700,
+                    textDecoration:'none', display:'inline-flex', alignItems:'center' }}>
+                  📖 Abrir guía completa
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showNetHelp && (
+        <div style={{ ...S.card, background:'#FEF2F2', border:'1px solid #FECACA' }}>
+          <div style={{ display:'flex', alignItems:'flex-start', gap:12 }}>
+            <span style={{ fontSize:24 }}>📡</span>
+            <div style={{ flex:1 }}>
+              <p style={{ fontSize:14, fontWeight:700, color:'#991B1B', margin:0 }}>
+                Sin conexión con el Apps Script
+              </p>
+              <p style={{ fontSize:12, color:'#7F1D1D', marginTop:6 }}>
+                Verifica tu conexión a internet. Si el problema persiste, revisa que el Apps Script siga desplegado en Google.
+              </p>
+              <button onClick={fetchNominasGuardadas}
+                style={{ marginTop:10, padding:'6px 14px', background:'#DC2626', color:'#fff', border:'none',
+                  borderRadius:6, fontSize:12, fontWeight:700, cursor:'pointer' }}>
+                🔄 Reintentar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={S.card}>
         <div style={S.sectionTitle}>Cargar nómina por fecha</div>
         <div style={{ display:'flex', gap:10, alignItems:'flex-end' }}>
