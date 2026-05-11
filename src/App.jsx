@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
-import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, CUOTA_RULES, AUTH_LIST, withToken, withTokenBody, isAuthError, checkAppsScriptConnection } from './config.js';
+import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, AUTH_LIST, resolveAuthAndCuotas, withToken, withTokenBody, isAuthError, checkAppsScriptConnection } from './config.js';
 import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates, parseMonto, parseCuotas, escapeHtml } from './utils.js';
 import DropZone from './components/DropZone.jsx';
 import Stat from './components/Stat.jsx';
@@ -399,7 +399,7 @@ export default function App() {
       }
       if(!enSemana) return;
 
-      let defaultAuth = authMap[razon]?.auth || 'MBL';
+      const { auth: defaultAuth, totalCuotas } = resolveAuthAndCuotas(razon, saldo, authMap);
       const isNC = saldo < 0;
 
       let cuotaText = '';
@@ -408,7 +408,6 @@ export default function App() {
         const histCount = histDocCount[docKey] || 0;
         localDocCount[docKey] = (localDocCount[docKey] || 0) + 1;
         const cuotaNum = histCount + localDocCount[docKey];
-        const totalCuotas = CUOTA_RULES[razon] || authMap[razon]?.cuotas || 0;
         if(totalCuotas > 0) cuotaText = `${cuotaNum}/${totalCuotas}`;
         else if(cuotaNum > 0) cuotaText = `${cuotaNum}`;
       }
@@ -452,7 +451,7 @@ export default function App() {
       const histCount = histDocCount[docKey] || 0;
       localDocCount[docKey] = (localDocCount[docKey] || 0) + 1;
       const cuotaNum = histCount + localDocCount[docKey];
-      const totalCuotas = CUOTA_RULES[r.detalle] || authMap[r.detalle]?.cuotas || 0;
+      const { totalCuotas } = resolveAuthAndCuotas(r.detalle, r.monto, authMap);
       let cuotas = '';
       if(totalCuotas > 0) cuotas = `${cuotaNum}/${totalCuotas}`;
       else if(cuotaNum > 0) cuotas = `${cuotaNum}`;

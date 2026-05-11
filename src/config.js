@@ -62,10 +62,12 @@ export const COPEC_EXCLUSIONS = new Set([
 
 export const CUOTA_RULES = {
   "MICHELIN CHILE LTDA":2,"MICHELIN CHILE LTDA (NOTA DE CREDITO)":2,
-  "AC COMERCIAL SPA":2,"COMERCIAL SP LTDA":2,
+  "AC COMERCIAL SPA":2,"AC COMERCIAL SPA (NOTA DE CREDITO)":2,
+  "COMERCIAL SP LTDA":3,"COMERCIAL SP LTDA (NOTA DE CREDITO)":3,
   "BOLSA DE PRODUCTOS DE CHILE (MILLA TIRES)":2,"SKC Servicios Automotrices S.A.":2,
   "Goodyear de Chile S.A.I.C":3,"Goodyear de Chile S.A.I.C (NOTA DE CREDITO)":3,
-  "SALINAS Y FABRES S.A.":3,"SKC RED SPA":3,"SKC RED S.A.":3,
+  "SALINAS Y FABRES S.A.":3,"SALINAS Y FABRES S.A. (NOTA DE CREDITO)":3,
+  "SKC RED SPA":3,"SKC RED S.A.":3,"SKC RED S.A. (NOTA DE CREDITO)":3,
   "BPC SERVICIOS Y NEGOCIOS S.A. (MILLA TIRES)":3,
   "CAREN SPA":3,"COMERCIALIZADORA DE NEUMATICOS LIMITADA":3,
   "Supermercado del Neumático Ltda.":3,"Milla Tirers Co Limitada":3,
@@ -74,6 +76,28 @@ export const CUOTA_RULES = {
   "CAPITAL EXPRESS SERVICIOS FINANCIEROS S.A. (MILLA TIRES)":3,
   "LATAM TRADE CAPITAL S.A. (MILLA TIRES)":3,
   "TANNER SERVICIOS FINANCIEROS S.A. (MILLA TIRES)":3,
+};
+
+// Caren es proveedor de repuestos por defecto, pero facturas mayores al umbral
+// se consideran neumáticos (autorizador LBS) en 3 cuotas.
+// Contexto: Michelin sale de Chile en 2026 y Caren toma parte de ese negocio.
+export const CAREN_NEUMATICOS_THRESHOLD = 6_000_000;
+export const CAREN_NAMES = new Set([
+  "CAREN SPA",
+  "CAREN SPA (NOTA DE CREDITO)",
+]);
+
+// Resuelve autorizador por defecto + total de cuotas para un proveedor.
+// Considera el mapeo de la planilla AUTORIZADORES, los overrides de CUOTA_RULES
+// y la regla especial de CAREN según monto.
+export const resolveAuthAndCuotas = (razon, monto, authMap) => {
+  let auth = authMap?.[razon]?.auth || 'MBL';
+  let totalCuotas = CUOTA_RULES[razon] || authMap?.[razon]?.cuotas || 0;
+  if(CAREN_NAMES.has(razon) && Math.abs(monto) > CAREN_NEUMATICOS_THRESHOLD) {
+    auth = 'LBS';
+    totalCuotas = 3;
+  }
+  return { auth, totalCuotas };
 };
 
 export const AUTH_LIST = ["MBL","LBS","LBL","PR","HB","NG","RB","LP","PB"];
