@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { fmtCLP } from '../utils.js';
+import { fmtCLP, parseMonto } from '../utils.js';
 import { APPS_SCRIPT_URL } from '../config.js';
 
 export default function TabAnteriores({
@@ -30,7 +30,7 @@ export default function TabAnteriores({
   }, [nominasGuardadas, filterText, rangeFrom, rangeTo]);
 
   const totalFiltered = useMemo(
-    () => filtered.reduce((s, n) => s + (parseFloat(n.TOTAL) || 0), 0),
+    () => filtered.reduce((s, n) => s + parseMonto(n.TOTAL), 0),
     [filtered]
   );
 
@@ -189,7 +189,7 @@ export default function TabAnteriores({
                         {n.LUNES} → {n.DOMINGO}
                       </td>
                       <td style={{ padding:'10px', textAlign:'right', fontWeight:700, ...S.mono }}>
-                        {fmtCLP(parseFloat(n.TOTAL) || 0)}
+                        {fmtCLP(parseMonto(n.TOTAL))}
                       </td>
                       <td style={{ padding:'10px', ...S.mono, color:'#666' }}>{n.TOTAL_DOCS}</td>
                       <td style={{ padding:'10px', fontSize:10, color:'#999' }}>

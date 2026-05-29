@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
-import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, AUTH_LIST, resolveAuthAndCuotas, withToken, withTokenBody, isAuthError, checkAppsScriptConnection } from './config.js';
+import { HISTORICO_URL, AUTORIZADORES_URL, APPS_SCRIPT_URL, COPEC_EXCLUSIONS, AUTH_LIST, resolveAuthAndCuotas, withToken, withTokenBody, isAuthError, esPetroleo, esLubricante, esCombustible, categoriaDoc } from './config.js';
 import { fmtCLP, fmtDate, fmtDateISO, parseDate, parseDateInput, normDoc, getWeekDates, parseMonto, parseCuotas, escapeHtml } from './utils.js';
 import DropZone from './components/DropZone.jsx';
 import Stat from './components/Stat.jsx';
@@ -45,6 +45,13 @@ export default function App() {
     } catch(e) {}
     return DEFAULT_EMAIL_CONFIG;
   });
+
+  // Toast efímero. Estable (useCallback []) para poder usarlo dentro de
+  // callbacks memoizados como processNomina sin recrearlos en cada render.
+  const showToast = useCallback(msg => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 4000);
+  }, []);
 
   // ─── LOAD GOOGLE SHEETS ON MOUNT ───────────────────────────────────
   useEffect(() => {
@@ -194,12 +201,11 @@ export default function App() {
         nDoc: String(d.N_DOCUMENTO || ''),
         rut: String(d.RUT || ''),
         detalle: String(d.DETALLE || ''),
-        monto: parseFloat(d.MONTO) || 0,
+        monto: parseMonto(d.MONTO),
         cuotas: parseCuotas(d.CUOTAS),
         autorizador: String(d.AUTORIZADOR || 'MBL'),
         isNC: d.IS_NC === true || d.IS_NC === 'true' || d.IS_NC === 'TRUE',
         esCopec: d.ES_COPEC === true || d.ES_COPEC === 'true' || d.ES_COPEC === 'TRUE',
-        isCombustible: d.ES_COPEC === true || d.ES_COPEC === 'true' || d.ES_COPEC === 'TRUE',
       }));
       setNominaRows(rows);
       setLoadedFromSheet(fecha);
@@ -228,14 +234,9 @@ export default function App() {
       if(!ok) return;
     }
 
-    // Calcular totales (reusa la lógica del memo, pero recalculo directo para no depender del render)
-    const esCombustibleActual = (r) => {
-      const d = r.detalle.toUpperCase();
-      if(d.includes('LUBRICANTES')) return false;
-      return d.includes('COPEC S A') || d.includes('ESMAX DISTRIBUCION SPA');
-    };
-    const combRows = nominaRows.filter(r => esCombustibleActual(r));
-    const provRows = nominaRows.filter(r => !esCombustibleActual(r));
+    // Totales por categoría usando la clasificación central (config.js)
+    const combRows = nominaRows.filter(r => esCombustible(r.detalle));
+    const provRows = nominaRows.filter(r => !esCombustible(r.detalle));
     const totalComb = combRows.reduce((s,r) => s+r.monto, 0);
     const totalProv = provRows.reduce((s,r) => s+r.monto, 0);
     const total = totalComb + totalProv;
@@ -339,6 +340,22 @@ export default function App() {
     reader.readAsArrayBuffer(file);
   };
 
+  // Conteo histórico de cuotas LBS por (Nº doc · detalle) anteriores a la
+  // fecha de pago. Memoizado: el recorrido pesado del histórico se ejecuta
+  // solo cuando cambian el histórico o la fecha de pago, NO en cada tecla.
+  const histDocCountLBS = useMemo(() => {
+    const map = {};
+    const pagoISO = fechas.viernes;
+    historico.forEach(h => {
+      if(h.AUTORIZADOR === 'LBS' && !COPEC_EXCLUSIONS.has(h.DETALLE)) {
+        if(h.FECHA_PAGO && h.FECHA_PAGO >= pagoISO) return;
+        const key = `${h.N_DOCUMENTO}|||${h.DETALLE}`;
+        map[key] = (map[key] || 0) + 1;
+      }
+    });
+    return map;
+  }, [historico, fechas.viernes]);
+
   // ─── PROCESS ───────────────────────────────────────────────────────
   const processNomina = useCallback(() => {
     if(!dataNomina || !dataCopec) return;
@@ -347,48 +364,69 @@ export default function App() {
     const lunes = parseDateInput(fechas.lunes);
     const domingo = parseDateInput(fechas.domingo);
     const pago = parseDateInput(fechas.viernes);
-    if(!lunes || !domingo || !pago) { setProcessing(false); return; }
+    if(!lunes || !domingo || !pago) {
+      showToast("⚠️ Revisa las fechas de la semana (lunes, domingo y fecha de pago).");
+      setProcessing(false); return;
+    }
+    if(domingo < lunes) {
+      showToast("⚠️ El domingo no puede ser anterior al lunes — corrige el rango de la semana.");
+      setProcessing(false); return;
+    }
 
     const hIdx = dataNomina.findIndex(r => r && r.some(c => typeof c === 'string' && c.includes('Vencimiento')));
-    if(hIdx < 0) { setProcessing(false); return; }
+    if(hIdx < 0) {
+      showToast("❌ No encontré la columna \"Vencimiento\" en el archivo de Defontana. ¿Subiste el Excel correcto?");
+      setProcessing(false); return;
+    }
     const headers = dataNomina[hIdx].map(h => h ? h.toString().trim() : '');
-    const col = {}; headers.forEach((h, i) => { if(h) col[h] = i; });
+    // Búsqueda tolerante de columnas: primero coincidencia exacta, luego por substring.
+    const findCol = (...nombres) => {
+      for(const n of nombres) {
+        const idx = headers.findIndex(h => h.toLowerCase() === n.toLowerCase());
+        if(idx >= 0) return idx;
+      }
+      for(const n of nombres) {
+        const idx = headers.findIndex(h => h.toLowerCase().includes(n.toLowerCase()));
+        if(idx >= 0) return idx;
+      }
+      return -1;
+    };
+    const cVenc    = findCol('Vencimiento');
+    const cFicha   = findCol('Ficha');
+    const cSaldo   = findCol('Saldo ($)', 'Saldo');
+    const cNumDoc  = findCol('Número Doc.', 'Numero Doc', 'N° Doc', 'Nº Doc', 'Documento');
+    const cIdFicha = findCol('ID Ficha');
+    const faltantes = [];
+    if(cVenc < 0)  faltantes.push('Vencimiento');
+    if(cFicha < 0) faltantes.push('Ficha');
+    if(cSaldo < 0) faltantes.push('Saldo ($)');
+    if(faltantes.length > 0) {
+      showToast(`❌ Faltan columnas en el archivo de Defontana: ${faltantes.join(', ')}.`);
+      setProcessing(false); return;
+    }
     const dataRows = dataNomina.slice(hIdx + 1).filter(r => r && r.some(c => c !== null && c !== ''));
 
     const cHIdx = dataCopec.findIndex(r => r && r.some(c => c?.toString().includes('Documento')));
     const cH = cHIdx >= 0 ? dataCopec[cHIdx] : [];
     const cDocCol = cH.findIndex(c => c?.toString().includes('Documento'));
-    const cCargoCol = cH.findIndex(c => /cargo/i.test(c?.toString() || ''));
-    const copecByDoc = {};
+    // Solo necesitamos QUÉ documentos COPEC caen en la semana; el monto sale de Defontana.
+    const copecNums = new Set();
     if(cHIdx >= 0) dataCopec.slice(cHIdx + 1).forEach(r => {
       if(!r) return;
-      const doc = normDoc(r[cDocCol]); if(!doc) return;
-      copecByDoc[doc] = (copecByDoc[doc] || 0) + (parseFloat(r[cCargoCol]) || 0);
-    });
-    const copecNums = new Set(Object.keys(copecByDoc));
-
-    const pagoISO = fmtDateISO(pago);
-    const histDocCount = {};
-    historico.forEach(h => {
-      if(h.AUTORIZADOR === 'LBS' && !COPEC_EXCLUSIONS.has(h.DETALLE)) {
-        if(h.FECHA_PAGO && h.FECHA_PAGO >= pagoISO) return;
-        const key = `${h.N_DOCUMENTO}|||${h.DETALLE}`;
-        histDocCount[key] = (histDocCount[key] || 0) + 1;
-      }
+      const doc = normDoc(r[cDocCol]);
+      if(doc) copecNums.add(doc);
     });
 
     const result = [];
     const localDocCount = {};
     dataRows.forEach(row => {
-      const venc = parseDate(row[col['Vencimiento']]);
-      const fichaName = row[col['Ficha']]?.toString() || '';
+      const venc = parseDate(row[cVenc]);
+      const fichaName = row[cFicha]?.toString() || '';
       const razon = fichaName;
       const esCopec = fichaName.toUpperCase().includes('COPEC');
-      const isCombustible = razon === 'COPEC S A' || razon === 'COPEC S A (NOTA DE CREDITO)' ||
-                            razon === 'ESMAX DISTRIBUCION SPA' || razon === 'ESMAX DISTRIBUCION SPA (NOTA DE CREDITO)';
-      const saldo = parseMonto(row[col['Saldo ($)']]);
-      const numDoc = normDoc(row[col['Número Doc.']]);
-      const rut = row[col['ID Ficha']]?.toString() || '';
+      const saldo = parseMonto(row[cSaldo]);
+      const numDoc = cNumDoc >= 0 ? normDoc(row[cNumDoc]) : '';
+      const rut = cIdFicha >= 0 ? (row[cIdFicha]?.toString() || '') : '';
 
       if(!esCopec && venc && venc < lunes) return;
       let enSemana = false;
@@ -405,7 +443,7 @@ export default function App() {
       let cuotaText = '';
       if(defaultAuth === 'LBS' && !COPEC_EXCLUSIONS.has(razon)) {
         const docKey = `${numDoc}|||${razon}`;
-        const histCount = histDocCount[docKey] || 0;
+        const histCount = histDocCountLBS[docKey] || 0;
         localDocCount[docKey] = (localDocCount[docKey] || 0) + 1;
         const cuotaNum = histCount + localDocCount[docKey];
         if(totalCuotas > 0) cuotaText = `${cuotaNum}/${totalCuotas}`;
@@ -417,7 +455,7 @@ export default function App() {
         fecha: fmtDateISO(pago),
         nDoc: numDoc, rut, detalle: razon, monto: saldo,
         cuotas: cuotaText, autorizador: defaultAuth,
-        isNC, esCopec, isCombustible,
+        isNC, esCopec,
       });
     });
 
@@ -428,27 +466,22 @@ export default function App() {
     setNominaRows(result);
     setSelectedIds(new Set());
     setProcessing(false);
+    if(result.length === 0) {
+      showToast(`⚠️ 0 documentos caen en la semana del ${fechas.lunes} al ${fechas.domingo}. Revisa el rango de fechas o que los archivos sean los correctos.`);
+      return; // se queda en la pestaña Carga para corregir
+    }
     setTab("revision");
-  }, [dataNomina, dataCopec, fechas, historico, authMap]);
+  }, [dataNomina, dataCopec, fechas, historico, authMap, histDocCountLBS, showToast]);
 
   // Recalcula las cuotas LBS para todas las filas (necesario cuando cambia un autorizador o detalle)
   const recomputeCuotas = useCallback((rows) => {
-    const pagoISO = fechas.viernes;
-    const histDocCount = {};
-    historico.forEach(h => {
-      if(h.AUTORIZADOR === 'LBS' && !COPEC_EXCLUSIONS.has(h.DETALLE)) {
-        if(h.FECHA_PAGO && h.FECHA_PAGO >= pagoISO) return;
-        const key = `${h.N_DOCUMENTO}|||${h.DETALLE}`;
-        histDocCount[key] = (histDocCount[key] || 0) + 1;
-      }
-    });
     const localDocCount = {};
     return rows.map(r => {
       if(r.autorizador !== 'LBS' || COPEC_EXCLUSIONS.has(r.detalle)) {
         return r.cuotas ? { ...r, cuotas: '' } : r;
       }
       const docKey = `${r.nDoc}|||${r.detalle}`;
-      const histCount = histDocCount[docKey] || 0;
+      const histCount = histDocCountLBS[docKey] || 0;
       localDocCount[docKey] = (localDocCount[docKey] || 0) + 1;
       const cuotaNum = histCount + localDocCount[docKey];
       const { totalCuotas } = resolveAuthAndCuotas(r.detalle, r.monto, authMap);
@@ -457,7 +490,7 @@ export default function App() {
       else if(cuotaNum > 0) cuotas = `${cuotaNum}`;
       return r.cuotas !== cuotas ? { ...r, cuotas } : r;
     });
-  }, [historico, authMap, fechas.viernes]);
+  }, [histDocCountLBS, authMap]);
 
   const updateRow = (id, field, value) => {
     setNominaRows(prev => {
@@ -517,13 +550,8 @@ export default function App() {
 
   // ─── STATS ─────────────────────────────────────────────────────────
   const stats = useMemo(() => {
-    const esCombustibleActual = (r) => {
-      const d = r.detalle.toUpperCase();
-      if(d.includes('LUBRICANTES')) return false;
-      return d.includes('COPEC S A') || d.includes('ESMAX DISTRIBUCION SPA');
-    };
-    const combustibleRows = nominaRows.filter(r => esCombustibleActual(r));
-    const proveedorRows = nominaRows.filter(r => !esCombustibleActual(r));
+    const combustibleRows = nominaRows.filter(r => esCombustible(r.detalle));
+    const proveedorRows = nominaRows.filter(r => !esCombustible(r.detalle));
     const combustibleTotal = combustibleRows.reduce((s, r) => s + r.monto, 0);
     const proveedorTotal = proveedorRows.reduce((s, r) => s + r.monto, 0);
     const total = combustibleTotal + proveedorTotal;
@@ -540,11 +568,9 @@ export default function App() {
       if(!f || f >= pagoISO) return;
       if(!weekTotals[f]) weekTotals[f] = { total:0, combustible:0, proveedores:0, docs:0 };
       const m = parseMonto(h.MONTO);
-      const det = (h.DETALLE || '').toUpperCase();
-      const esCombHist = (det.includes('COPEC S A') && !det.includes('LUBRICANTES')) || det.includes('ESMAX DISTRIBUCION SPA');
       weekTotals[f].total += m;
       weekTotals[f].docs += 1;
-      if(esCombHist) weekTotals[f].combustible += m;
+      if(esCombustible(h.DETALLE)) weekTotals[f].combustible += m;
       else weekTotals[f].proveedores += m;
     });
     const sortedWeeks = Object.entries(weekTotals).sort((a,b) => a[0].localeCompare(b[0]));
@@ -571,9 +597,7 @@ export default function App() {
     const recentProvs = new Set();
     const recent8dates = new Set(sortedWeeks.slice(-8).map(w => w[0]));
     historico.forEach(h => {
-      const det = (h.DETALLE || '').toUpperCase();
-      const esCombHist2 = (det.includes('COPEC S A') && !det.includes('LUBRICANTES')) || det.includes('ESMAX DISTRIBUCION SPA');
-      if(recent8dates.has(h.FECHA_PAGO) && !esCombHist2) recentProvs.add(h.DETALLE);
+      if(recent8dates.has(h.FECHA_PAGO) && !esCombustible(h.DETALLE)) recentProvs.add(h.DETALLE);
     });
     const newProvs = [...new Set(proveedorRows.filter(r => !recentProvs.has(r.detalle)).map(r => r.detalle))];
     if(newProvs.length > 0) alerts.push({ type:'info', text:`${newProvs.length} proveedor(es) nuevo(s): ${newProvs.slice(0,3).join(', ')}${newProvs.length>3?'…':''}` });
@@ -592,20 +616,13 @@ export default function App() {
       const f = h.FECHA_PAGO;
       if(!semanas[f]) semanas[f] = { fecha:f, total:0, petroleo:0, lubricantes:0, neumaticos:0, otros:0 };
       const m = parseMonto(h.MONTO);
-      const det = (h.DETALLE || '').toUpperCase();
       semanas[f].total += m;
-      if(det.includes('LUBRICANTES')) semanas[f].lubricantes += m;
-      else if(det.includes('COPEC S A') || det.includes('ESMAX DISTRIBUCION SPA')) semanas[f].petroleo += m;
-      else if(h.AUTORIZADOR === 'LBS') semanas[f].neumaticos += m;
-      else semanas[f].otros += m;
+      semanas[f][categoriaDoc(h.DETALLE, h.AUTORIZADOR)] += m;
     });
     return Object.values(semanas).sort((a,b) => a.fecha.localeCompare(b.fecha)).slice(-12);
   }, [historico]);
 
   // ─── CORREO LBS ────────────────────────────────────────────────────
-  const esPetroleo    = (detalle) => detalle.toUpperCase().includes('COPEC S A') && !detalle.toUpperCase().includes('LUBRICANTES');
-  const esLubricante  = (detalle) => detalle.toUpperCase().includes('LUBRICANTES');
-
   const correoLBS = useMemo(() => {
     const petroleo    = nominaRows.filter(r => esPetroleo(r.detalle));
     const lubricantes = nominaRows.filter(r => esLubricante(r.detalle));
@@ -625,10 +642,8 @@ export default function App() {
       const f = h.FECHA_PAGO;
       if(!semanas[f]) semanas[f] = { petroleo:0, lubricantes:0, neumaticos:0 };
       const m = parseMonto(h.MONTO);
-      const det = (h.DETALLE || '').toUpperCase();
-      if(det.includes('LUBRICANTES')) semanas[f].lubricantes += m;
-      else if(det.includes('COPEC S A')) semanas[f].petroleo += m;
-      else if(h.AUTORIZADOR === 'LBS') semanas[f].neumaticos += m;
+      const cat = categoriaDoc(h.DETALLE, h.AUTORIZADOR);
+      if(cat === 'petroleo' || cat === 'lubricantes' || cat === 'neumaticos') semanas[f][cat] += m;
     });
     const semanasSorted = Object.entries(semanas).sort((a,b) => a[0].localeCompare(b[0]));
     const prevSemana = semanasSorted.length > 0 ? semanasSorted[semanasSorted.length - 1][1] : null;
@@ -704,8 +719,6 @@ export default function App() {
       showToast("❌ No se pudo copiar al portapapeles");
     });
   };
-
-  const showToast = msg => { setToast(msg); setTimeout(() => setToast(""), 4000); };
 
   const S = {
     header: { background:'linear-gradient(135deg,#0D3B2E 0%,#14614B 50%,#1D9E75 100%)', color:'#fff', padding:'14px 24px' },
@@ -1477,13 +1490,7 @@ export default function App() {
                       <button
                         onClick={() => {
                           const html = buildHTML();
-                          try {
-                            const blob = new Blob([html], { type: 'text/html' });
-                            const data = new ClipboardItem({ 'text/html': blob });
-                            navigator.clipboard.write([data]).then(() =>
-                              showToast(`✓ Correo ${titulo} copiado — pega directo en Outlook o Gmail`)
-                            );
-                          } catch {
+                          const copiarTextoPlano = () => {
                             const filas = rows.map(r => {
                               const base = [r.nDoc, fechas.viernes];
                               if(showProveedor) base.push(r.detalle);
@@ -1494,7 +1501,18 @@ export default function App() {
                             navigator.clipboard.writeText(
                               [emailConfig.saludo, ``, emailConfig.cuerpo, ``, subtitulo, ...filas,
                                `TOTAL\t\t${total.toLocaleString('de-DE')}`].join('\n')
-                            ).then(() => showToast(`✓ Correo ${titulo} copiado`));
+                            ).then(() => showToast(`✓ Correo ${titulo} copiado (texto plano)`))
+                             .catch(() => showToast('❌ No se pudo copiar al portapapeles'));
+                          };
+                          try {
+                            if(typeof ClipboardItem === 'undefined') { copiarTextoPlano(); return; }
+                            const blob = new Blob([html], { type: 'text/html' });
+                            const data = new ClipboardItem({ 'text/html': blob });
+                            navigator.clipboard.write([data])
+                              .then(() => showToast(`✓ Correo ${titulo} copiado — pega directo en Outlook o Gmail`))
+                              .catch(() => copiarTextoPlano());
+                          } catch {
+                            copiarTextoPlano();
                           }
                         }}
                         style={{ padding:'9px 22px', borderRadius:8, background:color, color:'#fff',

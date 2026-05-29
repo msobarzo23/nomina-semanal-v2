@@ -53,6 +53,31 @@ export const checkAppsScriptConnection = async () => {
   }
 };
 
+// ─── Clasificación de categorías de gasto (fuente única de verdad) ──
+// Usar estos helpers en TODAS partes (dashboard, tendencia, correo y
+// guardado) para que petróleo/lubricantes/neumáticos se decidan con el
+// MISMO criterio. ESMAX se cuenta como petróleo igual que COPEC.
+const _normDetalle = (s) => (s == null ? '' : s.toString().toUpperCase());
+
+export const esLubricante = (detalle) => _normDetalle(detalle).includes('LUBRICANTES');
+
+export const esPetroleo = (detalle) => {
+  const d = _normDetalle(detalle);
+  if(d.includes('LUBRICANTES')) return false;
+  return d.includes('COPEC S A') || d.includes('ESMAX DISTRIBUCION SPA');
+};
+
+// En el dashboard "combustible" equivale a petróleo (COPEC/ESMAX, sin lubricantes).
+export const esCombustible = esPetroleo;
+
+// Categoría única de un documento: 'petroleo' | 'lubricantes' | 'neumaticos' | 'otros'
+export const categoriaDoc = (detalle, autorizador) => {
+  if(esLubricante(detalle)) return 'lubricantes';
+  if(esPetroleo(detalle))   return 'petroleo';
+  if(autorizador === 'LBS') return 'neumaticos';
+  return 'otros';
+};
+
 export const COPEC_EXCLUSIONS = new Set([
   "COPEC S A","COPEC S A (LUBRICANTES)","COPEC S A (LUBRICANTES)(NOTA DE CREDITO)",
   "ESMAX DISTRIBUCION SPA","FLUX SOLAR ENERGIAS RENOVABLES SPA",

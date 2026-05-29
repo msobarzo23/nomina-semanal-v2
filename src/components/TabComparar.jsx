@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { fmtCLP } from '../utils.js';
+import { fmtCLP, parseMonto } from '../utils.js';
 import { APPS_SCRIPT_URL, withToken } from '../config.js';
 
 export default function TabComparar({ nominasGuardadas, S }) {
@@ -40,8 +40,8 @@ export default function TabComparar({ nominasGuardadas, S }) {
 
   const diff = useMemo(() => {
     if(!datosA || !datosB) return null;
-    const totalA = parseFloat(datosA.encabezado?.TOTAL || 0);
-    const totalB = parseFloat(datosB.encabezado?.TOTAL || 0);
+    const totalA = parseMonto(datosA.encabezado?.TOTAL);
+    const totalB = parseMonto(datosB.encabezado?.TOTAL);
     const docsA  = parseInt(datosA.encabezado?.TOTAL_DOCS || 0);
     const docsB  = parseInt(datosB.encabezado?.TOTAL_DOCS || 0);
 
@@ -51,7 +51,7 @@ export default function TabComparar({ nominasGuardadas, S }) {
       rows.forEach(r => {
         const key = r.DETALLE || '';
         if(!key) return;
-        m[key] = (m[key] || 0) + (parseFloat(r.MONTO) || 0);
+        m[key] = (m[key] || 0) + parseMonto(r.MONTO);
       });
       return m;
     };
@@ -99,7 +99,7 @@ export default function TabComparar({ nominasGuardadas, S }) {
               <option value="">— Selecciona —</option>
               {nominasGuardadas.map(n => (
                 <option key={n.FECHA_PAGO} value={n.FECHA_PAGO}>
-                  {n.FECHA_PAGO} · {fmtCLP(parseFloat(n.TOTAL) || 0)}
+                  {n.FECHA_PAGO} · {fmtCLP(parseMonto(n.TOTAL))}
                 </option>
               ))}
             </select>
@@ -110,7 +110,7 @@ export default function TabComparar({ nominasGuardadas, S }) {
               <option value="">— Selecciona —</option>
               {nominasGuardadas.map(n => (
                 <option key={n.FECHA_PAGO} value={n.FECHA_PAGO}>
-                  {n.FECHA_PAGO} · {fmtCLP(parseFloat(n.TOTAL) || 0)}
+                  {n.FECHA_PAGO} · {fmtCLP(parseMonto(n.TOTAL))}
                 </option>
               ))}
             </select>
